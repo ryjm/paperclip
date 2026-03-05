@@ -36,6 +36,37 @@ const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/gif",
 ]);
 
+type CommentWakeActor = {
+  actorType: "agent" | "user";
+  agentId: string | null;
+};
+
+const GITHUB_COMMIT_OR_PR_LINK_RE =
+  /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:commit\/[0-9a-fA-F]{7,40}|pull\/\d+)(?:[/?#][^\s<>)\]}]*)?/;
+
+export function shouldWakeAgentForComment(
+  actor: CommentWakeActor,
+  targetAgentId: string | null | undefined,
+) {
+  if (!targetAgentId) return false;
+  return !(actor.actorType === "agent" && actor.agentId === targetAgentId);
+}
+
+export function containsGitHubCommitOrPrLink(body: string | null | undefined) {
+  if (!body) return false;
+  return GITHUB_COMMIT_OR_PR_LINK_RE.test(body);
+}
+
+export function resolveDoneTransitionEvidenceComment(
+  commentBody: string | null | undefined,
+  latestExistingCommentBody: string | null | undefined,
+) {
+  const directComment = commentBody?.trim();
+  if (directComment) return directComment;
+  const latestComment = latestExistingCommentBody?.trim();
+  return latestComment || null;
+}
+
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = issueService(db);
@@ -485,6 +516,24 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
+    const transitioningToDone = updateFields.status === "done" && existing.status !== "done";
+    if (transitioningToDone) {
+      let latestExistingCommentBody: string | null = null;
+      if (!commentBody?.trim()) {
+        const latestComments = await svc.listComments(id);
+        latestExistingCommentBody = latestComments[0]?.body ?? null;
+      }
+      const evidenceCommentBody = resolveDoneTransitionEvidenceComment(commentBody, latestExistingCommentBody);
+      if (!containsGitHubCommitOrPrLink(evidenceCommentBody)) {
+        res.status(422).json({
+          error:
+            "Cannot mark issue done: latest comment must include a GitHub commit or pull request link " +
+            "(https://github.com/<owner>/<repo>/commit/<sha> or /pull/<number>).",
+        });
+        return;
+      }
+    }
+
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
@@ -617,6 +666,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         }
 
         for (const mentionedId of mentionedIds) {
+          if (!shouldWakeAgentForComment(actor, mentionedId)) continue;
           if (wakeups.has(mentionedId)) continue;
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
           wakeups.set(mentionedId, {
@@ -931,9 +981,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+      const shouldWakeAssignee =
+        assigneeId &&
+        shouldWakeAgentForComment(actor, assigneeId) &&
+        (reopened || !isClosed);
+      if (shouldWakeAssignee) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",
@@ -991,6 +1043,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
 
       for (const mentionedId of mentionedIds) {
+        if (!shouldWakeAgentForComment(actor, mentionedId)) continue;
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
         wakeups.set(mentionedId, {

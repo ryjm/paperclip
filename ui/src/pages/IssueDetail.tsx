@@ -405,6 +405,14 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssue();
     },
+    onError: (err) => {
+      pushToast({
+        dedupeKey: `activity:issue.update_failed:${issueId ?? "unknown"}`,
+        title: "Issue update failed",
+        body: err instanceof Error ? err.message : "Unable to update issue.",
+        tone: "error",
+      });
+    },
   });
 
   const addComment = useMutation({
@@ -649,6 +657,9 @@ export function IssueDetail() {
             </Popover>
           </div>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Marking an issue done requires the latest comment to include a GitHub commit or PR link.
+        </p>
 
         <InlineEditor
           value={issue.title}
