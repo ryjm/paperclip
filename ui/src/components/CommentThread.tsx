@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Paperclip } from "lucide-react";
@@ -8,6 +8,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
+import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -98,9 +99,11 @@ type TimelineItem =
 const TimelineList = memo(function TimelineList({
   timeline,
   agentMap,
+  highlightCommentId,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
+  highlightCommentId?: string | null;
 }) {
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
@@ -139,8 +142,13 @@ const TimelineList = memo(function TimelineList({
         }
 
         const comment = item.comment;
+        const isHighlighted = highlightCommentId === comment.id;
         return (
-          <div key={comment.id} className="border border-border p-3 overflow-hidden min-w-0 rounded-sm">
+          <div
+            key={comment.id}
+            id={`comment-${comment.id}`}
+            className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${isHighlighted ? "border-primary/50 bg-primary/5" : "border-border"}`}
+          >
             <div className="flex items-center justify-between mb-1">
               {comment.authorAgentId ? (
                 <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
@@ -152,9 +160,12 @@ const TimelineList = memo(function TimelineList({
               ) : (
                 <Identity name="You" size="sm" />
               )}
-              <span className="text-xs text-muted-foreground">
+              <a
+                href={`#comment-${comment.id}`}
+                className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
+              >
                 {formatDateTime(comment.createdAt)}
-              </span>
+              </a>
             </div>
             <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
             {comment.runId && (
@@ -200,9 +211,12 @@ export function CommentThread({
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const [reassignTarget, setReassignTarget] = useState(currentAssigneeValue);
+  const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const location = useLocation();
+  const hasScrolledRef = useRef(false);
 
   const isClosed = issueStatus ? CLOSED_STATUSES.has(issueStatus) : false;
 
@@ -261,6 +275,24 @@ export function CommentThread({
     setReassignTarget(currentAssigneeValue);
   }, [currentAssigneeValue]);
 
+  // Scroll to comment when URL hash matches #comment-{id}
+  useEffect(() => {
+    const hash = location.hash;
+    if (!hash.startsWith("#comment-") || comments.length === 0) return;
+    const commentId = hash.slice("#comment-".length);
+    // Only scroll once per hash
+    if (hasScrolledRef.current) return;
+    const el = document.getElementById(`comment-${commentId}`);
+    if (el) {
+      hasScrolledRef.current = true;
+      setHighlightCommentId(commentId);
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Clear highlight after animation
+      const timer = setTimeout(() => setHighlightCommentId(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [location.hash, comments]);
+
   async function handleSubmit() {
     const trimmed = body.trim();
     if (!trimmed) return;
@@ -297,7 +329,7 @@ export function CommentThread({
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
 
-      <TimelineList timeline={timeline} agentMap={agentMap} />
+      <TimelineList timeline={timeline} agentMap={agentMap} highlightCommentId={highlightCommentId} />
 
       {liveRunSlot}
 
@@ -354,6 +386,32 @@ export function CommentThread({
               emptyMessage="No assignees found."
               onChange={setReassignTarget}
               className="text-xs h-8"
+              renderTriggerValue={(option) => {
+                if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const agent = agentId ? agentMap?.get(agentId) : null;
+                return (
+                  <>
+                    {agent ? (
+                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : null}
+                    <span className="truncate">{option.label}</span>
+                  </>
+                );
+              }}
+              renderOption={(option) => {
+                if (!option.id) return <span className="truncate">{option.label}</span>;
+                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const agent = agentId ? agentMap?.get(agentId) : null;
+                return (
+                  <>
+                    {agent ? (
+                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : null}
+                    <span className="truncate">{option.label}</span>
+                  </>
+                );
+              }}
             />
           )}
           <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
