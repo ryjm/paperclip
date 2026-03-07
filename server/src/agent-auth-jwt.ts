@@ -26,8 +26,10 @@ function parseNumber(value: string | undefined, fallback: number) {
 }
 
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
-  if (!secret) return null;
+  const secret =
+    process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() ||
+    process.env.BETTER_AUTH_SECRET?.trim() ||
+    "paperclip-dev-secret";
 
   return {
     secret,
