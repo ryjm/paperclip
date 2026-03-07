@@ -208,6 +208,15 @@ export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env, PATH: defaultPathForPlatform() };
 }
 
+function stripAmbientPaperclipEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const stripped: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (key.startsWith("PAPERCLIP_")) continue;
+    stripped[key] = value;
+  }
+  return stripped;
+}
+
 export async function ensureAbsoluteDirectory(
   cwd: string,
   opts: { createIfMissing?: boolean } = {},
@@ -272,7 +281,10 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...opts.env });
+    const mergedEnv = ensurePathInEnv({
+      ...stripAmbientPaperclipEnv(process.env),
+      ...opts.env,
+    });
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {
         const child = spawn(target.command, target.args, {
