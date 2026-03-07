@@ -658,7 +658,7 @@ export function IssueDetail() {
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
-          Marking an issue done requires the latest comment to include a GitHub commit or PR link.
+          Use the <code>code</code> label for tasks that change repository files. Those issues require the latest comment to include a GitHub commit or PR link before marking done. Non-code tasks can close without repo evidence.
         </p>
 
         <InlineEditor

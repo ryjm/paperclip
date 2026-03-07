@@ -67,6 +67,75 @@ export function resolveDoneTransitionEvidenceComment(
   return latestComment || null;
 }
 
+const DONE_EVIDENCE_REQUIRED_ERROR =
+  "Cannot mark issue done for code-labeled issues: latest completion comment must include a GitHub commit or pull request link " +
+  "(https://github.com/<owner>/<repo>/commit/<sha> or /pull/<number>). If this was non-code work, remove the code label before closing. " +
+  "Otherwise keep the issue open until traceability is available.";
+
+export function buildDoneEvidenceRequiredDetails() {
+  return {
+    requiredLabel: "code",
+    latestCommentRule: "Paperclip checks the transition comment first, then the current latest issue comment.",
+    acceptedEvidence: {
+      githubCommitUrl: "https://github.com/<owner>/<repo>/commit/<sha>",
+      githubPullRequestUrl: "https://github.com/<owner>/<repo>/pull/<number>",
+    },
+    fallback: {
+      nonCode: "Remove the code label before marking done when the task did not require repository changes.",
+      missingTraceability:
+        "Keep the issue in_progress or mark it blocked until the latest comment includes a GitHub commit or pull request link.",
+    },
+  };
+}
+
+export function buildDoneEvidenceRequiredErrorResponse() {
+  return {
+    error: DONE_EVIDENCE_REQUIRED_ERROR,
+    details: buildDoneEvidenceRequiredDetails(),
+  };
+}
+
+export function buildTaskAssignPermissionDeniedDetails() {
+  return {
+    fallback: {
+      mode: "unassigned_issue_for_triage",
+      summary: "Create the issue unassigned and route triage through the parent issue thread.",
+      steps: [
+        "Retry without assigneeAgentId or assigneeUserId.",
+        "Keep the issue in backlog or todo until someone with tasks:assign routes it.",
+        "Add a parent-issue comment linking the child issue so CEO or manager triage can pick it up.",
+      ],
+    },
+  };
+}
+
+export function buildTaskAssignPermissionDeniedError() {
+  return new HttpError(
+    403,
+    "Missing permission: tasks:assign",
+    buildTaskAssignPermissionDeniedDetails(),
+  );
+}
+
+function isCodeLabelName(name: string | null | undefined) {
+  return typeof name === "string" && name.trim().toLowerCase() === "code";
+}
+
+export function issueRequiresDoneEvidence(input: {
+  currentLabels: Array<{ id: string; name: string }> | null | undefined;
+  nextLabelIds?: string[] | null;
+  companyLabels?: Array<{ id: string; name: string }> | null | undefined;
+}) {
+  if (Array.isArray(input.nextLabelIds)) {
+    if (input.nextLabelIds.length === 0) return false;
+    const nextLabelIdSet = new Set(input.nextLabelIds);
+    return (input.companyLabels ?? []).some(
+      (label) => nextLabelIdSet.has(label.id) && isCodeLabelName(label.name),
+    );
+  }
+  return (input.currentLabels ?? []).some((label) => isCodeLabelName(label.name));
+}
+
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = issueService(db);
@@ -125,7 +194,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
+      if (!allowed) throw buildTaskAssignPermissionDeniedError();
       return;
     }
     if (req.actor.type === "agent") {
@@ -134,7 +203,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       if (allowedByGrant) return;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
       if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
-      throw forbidden("Missing permission: tasks:assign");
+      throw buildTaskAssignPermissionDeniedError();
     }
     throw unauthorized();
   }
@@ -518,19 +587,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
     const transitioningToDone = updateFields.status === "done" && existing.status !== "done";
     if (transitioningToDone) {
-      let latestExistingCommentBody: string | null = null;
-      if (!commentBody?.trim()) {
-        const latestComments = await svc.listComments(id);
-        latestExistingCommentBody = latestComments[0]?.body ?? null;
-      }
-      const evidenceCommentBody = resolveDoneTransitionEvidenceComment(commentBody, latestExistingCommentBody);
-      if (!containsGitHubCommitOrPrLink(evidenceCommentBody)) {
-        res.status(422).json({
-          error:
-            "Cannot mark issue done: latest comment must include a GitHub commit or pull request link " +
-            "(https://github.com/<owner>/<repo>/commit/<sha> or /pull/<number>).",
-        });
-        return;
+      const companyLabels = Array.isArray(updateFields.labelIds)
+        ? await svc.listLabels(existing.companyId)
+        : null;
+      const doneEvidenceRequired = issueRequiresDoneEvidence({
+        currentLabels: existing.labels,
+        nextLabelIds: updateFields.labelIds,
+        companyLabels,
+      });
+      if (doneEvidenceRequired) {
+        let latestExistingCommentBody: string | null = null;
+        if (!commentBody?.trim()) {
+          const latestComments = await svc.listComments(id);
+          latestExistingCommentBody = latestComments[0]?.body ?? null;
+        }
+        const evidenceCommentBody = resolveDoneTransitionEvidenceComment(commentBody, latestExistingCommentBody);
+        if (!containsGitHubCommitOrPrLink(evidenceCommentBody)) {
+          res.status(422).json(buildDoneEvidenceRequiredErrorResponse());
+          return;
+        }
       }
     }
 
