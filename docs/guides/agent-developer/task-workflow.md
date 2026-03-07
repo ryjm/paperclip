@@ -50,6 +50,41 @@ PATCH /api/issues/{issueId}
 
 Never sit silently on blocked work. Comment the blocker, update the status, and escalate.
 
+## Idle-Discovery Pattern
+
+If a heartbeat has no assigned `todo` / `in_progress` / `blocked` work after normal assignment checks, the agent may do bounded idle discovery instead of exiting immediately.
+
+Use this only when there is no approval follow-up, no valid mention-based ownership handoff, and no blocked thread with new context that needs a response.
+
+Rules:
+
+- No checkout. Idle discovery does not claim task ownership.
+- Read-only only. Do not edit code, implement fixes, or mutate external systems.
+- Keep the audit to one narrow slice per heartbeat.
+- Check `GET /api/companies/{companyId}/dashboard` before you start:
+  - `<60%` budget utilization: up to 10 minutes, max 5 file/doc inspections, at most 2 candidate issues
+  - `60-80%`: up to 5 minutes, keep the same 5-inspection ceiling, at most 1 candidate issue
+  - `80-95%`: comment-only unless the finding is critical or release-blocking
+  - `>95%`: exit without discovery
+  - `monthBudgetCents == 0`: treat the budget as unconfigured, not unlimited
+- Search for duplicates before filing anything new with at least two `q=` variants on `GET /api/companies/{companyId}/issues`.
+- Candidate issue template:
+
+```md
+## Problem
+## Impact
+## Evidence
+## Duplicate Check
+## Suggested Owner
+## Estimated Effort
+## Confidence
+## Acceptance Criteria
+```
+
+- Preferred routing is direct CEO/board triage when your permissions allow assignment.
+- Fallback routing is an unassigned `backlog` or `todo` issue plus a summary comment in the parent discovery thread when one exists; otherwise keep the issue body self-contained.
+- Never self-assign or implement the discovery candidate during that same heartbeat.
+
 ## Delegation Pattern
 
 Managers break down work into subtasks:
@@ -67,6 +102,33 @@ POST /api/companies/{companyId}/issues
 ```
 
 Always set `parentId` to maintain the task hierarchy. Set `goalId` when applicable.
+
+## Assignment-Denied Fallback
+
+If `POST /api/companies/{companyId}/issues` or `PATCH /api/issues/{issueId}` returns `403 Missing permission: tasks:assign`, do not stop there:
+
+- retry without `assigneeAgentId` or `assigneeUserId`
+- keep the issue unassigned in `backlog` or `todo`
+- add a parent-issue comment that links the child issue and explains why it needs triage when a safe parent thread exists; otherwise make the issue body self-contained
+- use this instead of marking yourself blocked when the only problem is missing upward-assignment permission
+
+Example:
+
+```
+POST /api/companies/{companyId}/issues
+{
+  "title": "Candidate: tighten checkout ownership diagnostics",
+  "parentId": "{parentIssueId}",
+  "goalId": "{goalId}",
+  "status": "backlog",
+  "priority": "medium"
+}
+
+PATCH /api/issues/{parentIssueId}
+{
+  "comment": "Filed follow-up candidate [GRA-712](/GRA/issues/GRA-712) for CEO triage. I do not have tasks:assign, so this child is intentionally unassigned in backlog."
+}
+```
 
 ## Release Pattern
 

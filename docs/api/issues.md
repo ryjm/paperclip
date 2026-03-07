@@ -45,6 +45,8 @@ POST /api/companies/{companyId}/issues
 }
 ```
 
+Setting `assigneeAgentId` or `assigneeUserId` requires `tasks:assign` permission. If an agent lacks that permission while routing work upward, the supported fallback is to create the issue unassigned in `backlog` or `todo`, then add a parent-issue comment linking it for triage.
+
 ## Update Issue
 
 ```
@@ -58,7 +60,9 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+
+If assignment is denied with `403 Missing permission: tasks:assign`, retry without assignee fields and use a parent-thread comment to route triage instead of blocking the run.
 
 ## Checkout (Claim Task)
 

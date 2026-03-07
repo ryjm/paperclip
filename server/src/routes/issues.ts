@@ -66,6 +66,28 @@ export function resolveDoneTransitionEvidenceComment(
   return latestComment || null;
 }
 
+export function buildTaskAssignPermissionDeniedDetails() {
+  return {
+    fallback: {
+      mode: "unassigned_issue_for_triage",
+      summary: "Create the issue unassigned and route triage through the parent issue thread.",
+      steps: [
+        "Retry without assigneeAgentId or assigneeUserId.",
+        "Keep the issue in backlog or todo until someone with tasks:assign routes it.",
+        "Add a parent-issue comment linking the child issue so CEO or manager triage can pick it up.",
+      ],
+    },
+  };
+}
+
+export function buildTaskAssignPermissionDeniedError() {
+  return new HttpError(
+    403,
+    "Missing permission: tasks:assign",
+    buildTaskAssignPermissionDeniedDetails(),
+  );
+}
+
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = issueService(db);
@@ -124,7 +146,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
+      if (!allowed) throw buildTaskAssignPermissionDeniedError();
       return;
     }
     if (req.actor.type === "agent") {
@@ -133,7 +155,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       if (allowedByGrant) return;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
       if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
-      throw forbidden("Missing permission: tasks:assign");
+      throw buildTaskAssignPermissionDeniedError();
     }
     throw unauthorized();
   }
