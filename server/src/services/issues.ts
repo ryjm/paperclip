@@ -46,6 +46,19 @@ function applyStatusSideEffects(
   return patch;
 }
 
+function applyInReviewAssigneeFallback(
+  existing: typeof issues.$inferSelect,
+  issueData: Partial<typeof issues.$inferInsert>,
+  patch: Partial<typeof issues.$inferInsert>,
+) {
+  if (issueData.status !== "in_review") return;
+  if (issueData.assigneeAgentId !== undefined || issueData.assigneeUserId !== undefined) return;
+  if (!existing.createdByUserId || existing.assigneeUserId) return;
+
+  patch.assigneeAgentId = null;
+  patch.assigneeUserId = existing.createdByUserId;
+}
+
 export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
@@ -683,10 +696,12 @@ export function issueService(db: Db) {
         updatedAt: new Date(),
       };
 
+      applyInReviewAssigneeFallback(existing, issueData, patch);
+
       const nextAssigneeAgentId =
-        issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
+        patch.assigneeAgentId !== undefined ? patch.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
-        issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+        patch.assigneeUserId !== undefined ? patch.assigneeUserId : existing.assigneeUserId;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -694,11 +709,11 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (issueData.assigneeAgentId) {
-        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
+      if (patch.assigneeAgentId) {
+        await assertAssignableAgent(existing.companyId, patch.assigneeAgentId);
       }
-      if (issueData.assigneeUserId) {
-        await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      if (patch.assigneeUserId) {
+        await assertAssignableUser(existing.companyId, patch.assigneeUserId);
       }
 
       applyStatusSideEffects(issueData.status, patch);

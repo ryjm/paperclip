@@ -117,6 +117,52 @@ export function buildTaskAssignPermissionDeniedError() {
   );
 }
 
+function isSameIssueFieldValue(previous: unknown, next: unknown): boolean {
+  if (previous instanceof Date || next instanceof Date) {
+    const previousTime = previous instanceof Date ? previous.getTime() : null;
+    const nextTime = next instanceof Date ? next.getTime() : null;
+    return previousTime === nextTime;
+  }
+  if (Array.isArray(previous) || Array.isArray(next)) {
+    if (!Array.isArray(previous) || !Array.isArray(next)) return false;
+    if (previous.length !== next.length) return false;
+    return previous.every((value, index) => value === next[index]);
+  }
+  return previous === next;
+}
+
+function buildIssueUpdateActivityDetails(
+  previousIssue: Record<string, unknown>,
+  nextIssue: Record<string, unknown>,
+  requestedFields: Record<string, unknown>,
+) {
+  const trackedFields = new Set([
+    ...Object.keys(requestedFields),
+    "assigneeAgentId",
+    "assigneeUserId",
+  ]);
+
+  const details: Record<string, unknown> = {
+    identifier: nextIssue.identifier,
+  };
+  const previous: Record<string, unknown> = {};
+
+  for (const field of trackedFields) {
+    if (!(field in previousIssue) || !(field in nextIssue)) continue;
+    const before = previousIssue[field];
+    const after = nextIssue[field];
+    if (isSameIssueFieldValue(before, after)) continue;
+    details[field] = after;
+    previous[field] = before;
+  }
+
+  if (Object.keys(previous).length > 0) {
+    details._previous = previous;
+  }
+
+  return details;
+}
+
 function isCodeLabelName(name: string | null | undefined) {
   return typeof name === "string" && name.trim().toLowerCase() === "code";
 }
@@ -637,13 +683,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    // Build activity details with previous values for changed fields
-    const previous: Record<string, unknown> = {};
-    for (const key of Object.keys(updateFields)) {
-      if (key in existing && (existing as Record<string, unknown>)[key] !== (updateFields as Record<string, unknown>)[key]) {
-        previous[key] = (existing as Record<string, unknown>)[key];
-      }
-    }
+    const activityDetails = buildIssueUpdateActivityDetails(
+      existing as Record<string, unknown>,
+      issue as Record<string, unknown>,
+      updateFields as Record<string, unknown>,
+    );
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -655,7 +699,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       action: "issue.updated",
       entityType: "issue",
       entityId: issue.id,
-      details: { ...updateFields, identifier: issue.identifier, _previous: Object.keys(previous).length > 0 ? previous : undefined },
+      details: activityDetails,
     });
 
     let comment = null;
