@@ -39,7 +39,7 @@ import {
 } from "lucide-react";
 import { Identity } from "../components/Identity";
 import { PageTabBar } from "../components/PageTabBar";
-import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 
 const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RECENT_ISSUES_LIMIT = 100;
@@ -53,6 +53,7 @@ type InboxCategoryFilter =
   | "join_requests"
   | "approvals"
   | "failed_runs"
+  | "stranded_work"
   | "alerts"
   | "stale_work";
 type InboxApprovalFilter = "all" | "actionable" | "resolved";
@@ -61,6 +62,7 @@ type SectionKey =
   | "join_requests"
   | "approvals"
   | "failed_runs"
+  | "stranded_work"
   | "alerts"
   | "stale_work";
 
@@ -302,6 +304,94 @@ function FailedRunCard({
   );
 }
 
+type StrandedIssueEntry = {
+  issue: Issue;
+  agent: Agent;
+  failedRun: HeartbeatRun | null;
+};
+
+function StrandedIssueCard({
+  entry,
+  onDismiss,
+}: {
+  entry: StrandedIssueEntry;
+  onDismiss: () => void;
+}) {
+  const { issue, agent, failedRun } = entry;
+  const issueRef = issue.identifier ?? issue.id.slice(0, 8);
+  const failureSummary = failedRun ? runFailureMessage(failedRun) : null;
+  const failureAge = failedRun ? `Last failed run ${timeAgo(failedRun.createdAt)}` : null;
+  const heartbeatAge = agent.lastHeartbeatAt
+    ? `Last heartbeat ${timeAgo(agent.lastHeartbeatAt)}`
+    : "No recent heartbeat recorded";
+
+  return (
+    <div className="group relative overflow-hidden rounded-xl border border-amber-500/30 bg-gradient-to-br from-amber-500/10 via-card to-card p-4">
+      <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-amber-500/10 blur-2xl" />
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+        aria-label="Dismiss"
+      >
+        <X className="h-4 w-4" />
+      </button>
+      <div className="relative space-y-3">
+        <Link
+          to={`/issues/${issue.identifier ?? issue.id}`}
+          className="block truncate text-sm font-medium transition-colors hover:text-foreground no-underline text-inherit"
+        >
+          <span className="font-mono text-muted-foreground mr-1.5">{issueRef}</span>
+          {issue.title}
+        </Link>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-md bg-amber-500/20 p-1.5">
+            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-300" />
+          </span>
+          <PriorityIcon priority={issue.priority} />
+          <StatusIcon status={issue.status} />
+          <Identity name={agent.name} size="sm" />
+          <StatusBadge status={agent.status} />
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          {failureAge ? `${failureAge}. ${heartbeatAge}.` : heartbeatAge}
+        </p>
+
+        {failureSummary && (
+          <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm">
+            {failureSummary}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 px-2.5" asChild>
+            <Link to={`/issues/${issue.identifier ?? issue.id}`}>
+              Open issue
+              <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+            </Link>
+          </Button>
+          <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 px-2.5" asChild>
+            <Link to={`/agents/${agent.id}`}>
+              Open agent
+              <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+            </Link>
+          </Button>
+          {failedRun && (
+            <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 px-2.5" asChild>
+              <Link to={`/agents/${agent.id}/runs/${failedRun.id}`}>
+                Open run
+                <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -385,10 +475,6 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const staleIssues = useMemo(
-    () => (issues ? getStaleIssues(issues) : []).filter((i) => !dismissed.has(`stale:${i.id}`)),
-    [issues, dismissed],
-  );
   const sortByMostRecentActivity = useCallback(
     (a: Issue, b: Issue) => {
       const activityDiff = issueLastActivityTimestamp(b) - issueLastActivityTimestamp(a);
@@ -404,8 +490,8 @@ export function Inbox() {
   );
 
   const agentById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const agent of agents ?? []) map.set(agent.id, agent.name);
+    const map = new Map<string, Agent>();
+    for (const agent of agents ?? []) map.set(agent.id, agent);
     return map;
   }, [agents]);
 
@@ -415,9 +501,70 @@ export function Inbox() {
     return map;
   }, [issues]);
 
+  const latestFailedRunsByAgent = useMemo(
+    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []),
+    [heartbeatRuns],
+  );
+
+  const latestFailedRunByAgentId = useMemo(() => {
+    const map = new Map<string, HeartbeatRun>();
+    for (const run of latestFailedRunsByAgent) {
+      map.set(run.agentId, run);
+    }
+    return map;
+  }, [latestFailedRunsByAgent]);
+
+  const strandedIssues = useMemo(
+    () =>
+      (issues ?? [])
+        .filter((issue) => {
+          if (!["todo", "in_progress"].includes(issue.status)) return false;
+          if (!issue.assigneeAgentId) return false;
+          if (dismissed.has(`stranded:${issue.id}`)) return false;
+          return agentById.get(issue.assigneeAgentId)?.status === "error";
+        })
+        .map((issue) => {
+          const agent = issue.assigneeAgentId ? agentById.get(issue.assigneeAgentId) ?? null : null;
+          if (!agent) return null;
+          return {
+            issue,
+            agent,
+            failedRun: latestFailedRunByAgentId.get(agent.id) ?? null,
+          };
+        })
+        .filter((entry): entry is StrandedIssueEntry => entry !== null)
+        .sort((a, b) => {
+          const failedRunDiff =
+            normalizeTimestamp(b.failedRun?.createdAt ?? null) -
+            normalizeTimestamp(a.failedRun?.createdAt ?? null);
+          if (failedRunDiff !== 0) return failedRunDiff;
+
+          const heartbeatDiff =
+            normalizeTimestamp(b.agent.lastHeartbeatAt) -
+            normalizeTimestamp(a.agent.lastHeartbeatAt);
+          if (heartbeatDiff !== 0) return heartbeatDiff;
+
+          return normalizeTimestamp(b.issue.updatedAt) - normalizeTimestamp(a.issue.updatedAt);
+        }),
+    [issues, dismissed, agentById, latestFailedRunByAgentId],
+  );
+
+  const strandedIssueIds = useMemo(
+    () => new Set(strandedIssues.map((entry) => entry.issue.id)),
+    [strandedIssues],
+  );
+
+  const staleIssues = useMemo(
+    () =>
+      (issues ? getStaleIssues(issues) : [])
+        .filter((issue) => !strandedIssueIds.has(issue.id))
+        .filter((issue) => !dismissed.has(`stale:${issue.id}`)),
+    [issues, strandedIssueIds, dismissed],
+  );
+
   const failedRuns = useMemo(
-    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
-    [heartbeatRuns, dismissed],
+    () => latestFailedRunsByAgent.filter((run) => !dismissed.has(`run:${run.id}`)),
+    [latestFailedRunsByAgent, dismissed],
   );
 
   const allApprovals = useMemo(
@@ -444,7 +591,7 @@ export function Inbox() {
 
   const agentName = (id: string | null) => {
     if (!id) return null;
-    return agentById.get(id) ?? null;
+    return agentById.get(id)?.name ?? null;
   };
 
   const approveMutation = useMutation({
@@ -528,7 +675,13 @@ export function Inbox() {
   }
 
   const hasRunFailures = failedRuns.length > 0;
-  const showAggregateAgentError = !!dashboard && dashboard.agents.error > 0 && !hasRunFailures && !dismissed.has("alert:agent-errors");
+  const hasStranded = strandedIssues.length > 0;
+  const showAggregateAgentError =
+    !!dashboard &&
+    dashboard.agents.error > 0 &&
+    !hasRunFailures &&
+    !hasStranded &&
+    !dismissed.has("alert:agent-errors");
   const showBudgetAlert =
     !!dashboard &&
     dashboard.costs.monthBudgetCents > 0 &&
@@ -541,6 +694,7 @@ export function Inbox() {
 
   const newItemCount =
     failedRuns.length +
+    strandedIssues.length +
     staleIssues.length +
     (showAggregateAgentError ? 1 : 0) +
     (showBudgetAlert ? 1 : 0);
@@ -552,6 +706,8 @@ export function Inbox() {
   const showApprovalsCategory = allCategoryFilter === "everything" || allCategoryFilter === "approvals";
   const showFailedRunsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
+  const showStrandedCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "stranded_work";
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
   const showStaleCategory = allCategoryFilter === "everything" || allCategoryFilter === "stale_work";
 
@@ -565,11 +721,13 @@ export function Inbox() {
       : showApprovalsCategory && filteredAllApprovals.length > 0;
   const showFailedRunsSection =
     tab === "new" ? hasRunFailures : showFailedRunsCategory && hasRunFailures;
+  const showStrandedSection = tab === "new" ? hasStranded : showStrandedCategory && hasStranded;
   const showAlertsSection = tab === "new" ? hasAlerts : showAlertsCategory && hasAlerts;
   const showStaleSection = tab === "new" ? hasStale : showStaleCategory && hasStale;
 
   const visibleSections = [
     showFailedRunsSection ? "failed_runs" : null,
+    showStrandedSection ? "stranded_work" : null,
     showAlertsSection ? "alerts" : null,
     showStaleSection ? "stale_work" : null,
     showApprovalsSection ? "approvals" : null,
@@ -626,6 +784,7 @@ export function Inbox() {
                 <SelectItem value="join_requests">Join requests</SelectItem>
                 <SelectItem value="approvals">Approvals</SelectItem>
                 <SelectItem value="failed_runs">Failed runs</SelectItem>
+                <SelectItem value="stranded_work">Stranded work</SelectItem>
                 <SelectItem value="alerts">Alerts</SelectItem>
                 <SelectItem value="stale_work">Stale work</SelectItem>
               </SelectContent>
@@ -765,6 +924,26 @@ export function Inbox() {
                   issueById={issueById}
                   agentName={agentName(run.agentId)}
                   onDismiss={() => dismiss(`run:${run.id}`)}
+                />
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {showStrandedSection && (
+        <>
+          {showSeparatorBefore("stranded_work") && <Separator />}
+          <div>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Stranded Work
+            </h3>
+            <div className="grid gap-3">
+              {strandedIssues.map((entry) => (
+                <StrandedIssueCard
+                  key={entry.issue.id}
+                  entry={entry}
+                  onDismiss={() => dismiss(`stranded:${entry.issue.id}`)}
                 />
               ))}
             </div>

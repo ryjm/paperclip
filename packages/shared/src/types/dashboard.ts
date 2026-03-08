@@ -19,4 +19,5 @@ export interface DashboardSummary {
   };
   pendingApprovals: number;
   staleTasks: number;
+  strandedTasks: number;
 }

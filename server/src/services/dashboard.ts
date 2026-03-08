@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
@@ -36,11 +36,40 @@ export function dashboardService(db: Db) {
       const staleTasks = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)
+        .leftJoin(
+          agents,
+          and(
+            eq(issues.assigneeAgentId, agents.id),
+            eq(issues.companyId, agents.companyId),
+          ),
+        )
         .where(
           and(
             eq(issues.companyId, companyId),
             eq(issues.status, "in_progress"),
+            isNull(issues.hiddenAt),
             sql`${issues.startedAt} < ${staleCutoff.toISOString()}`,
+            sql`coalesce(${agents.status}, '') <> 'error'`,
+          ),
+        )
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      const strandedTasks = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .innerJoin(
+          agents,
+          and(
+            eq(issues.assigneeAgentId, agents.id),
+            eq(issues.companyId, agents.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            isNull(issues.hiddenAt),
+            sql`${issues.status} in ('todo', 'in_progress')`,
+            eq(agents.status, "error"),
           ),
         )
         .then((rows) => Number(rows[0]?.count ?? 0));
@@ -108,6 +137,7 @@ export function dashboardService(db: Db) {
         },
         pendingApprovals,
         staleTasks,
+        strandedTasks,
       };
     },
   };
