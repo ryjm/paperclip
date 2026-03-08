@@ -16,6 +16,7 @@ import {
   ensurePathInEnv,
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
+  deriveAgentHomeFromInstructionsFilePath,
   renderTemplate,
   joinPromptSections,
   runChildProcess,
@@ -314,6 +315,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
+  }
+  const agentHome = deriveAgentHomeFromInstructionsFilePath(
+    asString(config.instructionsFilePath, ""),
+    cwd,
+  );
+  if (agentHome) {
+    env.AGENT_HOME = agentHome;
   }
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
