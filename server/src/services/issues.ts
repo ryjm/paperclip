@@ -378,6 +378,109 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  type ConflictRunRef = {
+    field: "checkoutRunId" | "executionRunId";
+    runId: string;
+  };
+
+  async function getConflictRun(runId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        invocationSource: heartbeatRuns.invocationSource,
+        triggerDetail: heartbeatRuns.triggerDetail,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function classifyRunConflict(input: {
+    current: {
+      id: string;
+      status: string;
+      assigneeAgentId: string | null;
+      checkoutRunId: string | null;
+      executionRunId: string | null;
+    };
+    actorAgentId: string;
+    actorRunId: string | null;
+    kind: "checkout" | "ownership";
+  }) {
+    if (!input.actorRunId || input.current.assigneeAgentId !== input.actorAgentId) {
+      return null;
+    }
+
+    const conflictRefs: ConflictRunRef[] = [];
+    if (input.current.checkoutRunId && input.current.checkoutRunId !== input.actorRunId) {
+      conflictRefs.push({ field: "checkoutRunId", runId: input.current.checkoutRunId });
+    }
+    if (
+      input.current.executionRunId &&
+      input.current.executionRunId !== input.actorRunId &&
+      input.current.executionRunId !== input.current.checkoutRunId
+    ) {
+      conflictRefs.push({ field: "executionRunId", runId: input.current.executionRunId });
+    }
+    if (conflictRefs.length === 0) return null;
+
+    const actorRun = await getConflictRun(input.actorRunId);
+
+    for (const ref of conflictRefs) {
+      const ownerRun = await getConflictRun(ref.runId);
+      if (!ownerRun) continue;
+      if (!ACTIVE_RUN_STATUSES.includes(ownerRun.status)) continue;
+      if (ownerRun.agentId !== input.actorAgentId) continue;
+
+      const isNewerRun = actorRun ? ownerRun.createdAt.getTime() >= actorRun.createdAt.getTime() : false;
+      const reason = isNewerRun ? "superseded_by_newer_run" : "blocked_by_active_run";
+      const message =
+        input.kind === "checkout"
+          ? isNewerRun
+            ? "Issue checkout superseded by newer run"
+            : "Issue checkout blocked by active run"
+          : isNewerRun
+            ? "Issue run ownership superseded by newer run"
+            : "Issue run ownership blocked by active run";
+
+      return {
+        message,
+        details: {
+          issueId: input.current.id,
+          status: input.current.status,
+          assigneeAgentId: input.current.assigneeAgentId,
+          checkoutRunId: input.current.checkoutRunId,
+          executionRunId: input.current.executionRunId,
+          actorAgentId: input.actorAgentId,
+          actorRunId: input.actorRunId,
+          reason,
+          ownerField: ref.field,
+          ownerRunId: ownerRun.id,
+          ownerRunStatus: ownerRun.status,
+          ownerRunCreatedAt: ownerRun.createdAt.toISOString(),
+          ownerRunInvocationSource: ownerRun.invocationSource,
+          ownerRunTriggerDetail: ownerRun.triggerDetail,
+          ...(isNewerRun
+            ? {
+              supersededByField: ref.field,
+              supersededByRunId: ownerRun.id,
+              supersededByStatus: ownerRun.status,
+            }
+            : {
+              blockingField: ref.field,
+              blockingRunId: ownerRun.id,
+              blockingRunStatus: ownerRun.status,
+            }),
+        },
+      };
+    }
+
+    return null;
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -402,6 +505,61 @@ export function issueService(db: Db) {
           eq(issues.status, "in_progress"),
           eq(issues.assigneeAgentId, input.actorAgentId),
           eq(issues.checkoutRunId, input.expectedCheckoutRunId),
+        ),
+      )
+      .returning({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .then((rows) => rows[0] ?? null);
+
+    return adopted;
+  }
+
+  async function adoptAvailableExecutionRun(input: {
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    currentStatus: string;
+    currentExecutionRunId: string | null;
+  }) {
+    if (
+      input.currentExecutionRunId &&
+      input.currentExecutionRunId !== input.actorRunId &&
+      !(await isTerminalOrMissingHeartbeatRun(input.currentExecutionRunId))
+    ) {
+      return null;
+    }
+
+    const now = new Date();
+    const patch: Partial<typeof issues.$inferInsert> = {
+      checkoutRunId: input.actorRunId,
+      executionRunId: input.actorRunId,
+      executionLockedAt: now,
+      updatedAt: now,
+    };
+    if (input.currentStatus !== "in_progress") {
+      patch.status = "in_progress";
+      patch.startedAt = now;
+    }
+
+    const executionRunCondition = input.currentExecutionRunId
+      ? eq(issues.executionRunId, input.currentExecutionRunId)
+      : isNull(issues.executionRunId);
+
+    const adopted = await db
+      .update(issues)
+      .set(patch)
+      .where(
+        and(
+          eq(issues.id, input.issueId),
+          eq(issues.status, input.currentStatus),
+          eq(issues.assigneeAgentId, input.actorAgentId),
+          isNull(issues.checkoutRunId),
+          executionRunCondition,
         ),
       )
       .returning({
@@ -820,30 +978,22 @@ export function issueService(db: Db) {
 
       if (
         current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
         current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
-        checkoutRunId
+        checkoutRunId &&
+        (current.status === "in_progress" || expectedStatuses.includes(current.status))
       ) {
-        const adopted = await db
-          .update(issues)
-          .set({
-            checkoutRunId,
-            executionRunId: checkoutRunId,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.id, id),
-              eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        const adopted = await adoptAvailableExecutionRun({
+          issueId: id,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+          currentStatus: current.status,
+          currentExecutionRunId: current.executionRunId,
+        });
+        if (adopted) {
+          const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
+          const [enriched] = await withIssueLabels(db, [row]);
+          return enriched;
+        }
       }
 
       if (
@@ -877,6 +1027,16 @@ export function issueService(db: Db) {
         return enriched;
       }
 
+      const runConflict = await classifyRunConflict({
+        current,
+        actorAgentId: agentId,
+        actorRunId: checkoutRunId,
+        kind: "checkout",
+      });
+      if (runConflict) {
+        throw conflict(runConflict.message, runConflict.details);
+      }
+
       throw conflict("Issue checkout conflict", {
         issueId: current.id,
         status: current.status,
@@ -893,6 +1053,7 @@ export function issueService(db: Db) {
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -906,6 +1067,28 @@ export function issueService(db: Db) {
         sameRunLock(current.checkoutRunId, actorRunId)
       ) {
         return { ...current, adoptedFromRunId: null as string | null };
+      }
+
+      if (
+        actorRunId &&
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        current.checkoutRunId == null
+      ) {
+        const adopted = await adoptAvailableExecutionRun({
+          issueId: id,
+          actorAgentId,
+          actorRunId,
+          currentStatus: current.status,
+          currentExecutionRunId: current.executionRunId ?? null,
+        });
+
+        if (adopted) {
+          return {
+            ...adopted,
+            adoptedFromRunId: null as string | null,
+          };
+        }
       }
 
       if (
@@ -930,11 +1113,22 @@ export function issueService(db: Db) {
         }
       }
 
+      const runConflict = await classifyRunConflict({
+        current,
+        actorAgentId,
+        actorRunId,
+        kind: "ownership",
+      });
+      if (runConflict) {
+        throw conflict(runConflict.message, runConflict.details);
+      }
+
       throw conflict("Issue run ownership conflict", {
         issueId: current.id,
         status: current.status,
         assigneeAgentId: current.assigneeAgentId,
         checkoutRunId: current.checkoutRunId,
+        executionRunId: current.executionRunId,
         actorAgentId,
         actorRunId,
       });

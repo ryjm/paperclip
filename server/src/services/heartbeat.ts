@@ -2050,6 +2050,24 @@ export function heartbeatService(db: Db) {
       })
       .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
+    if (issueId && shouldQueueFollowupForCommentWake && sameScopeRunningRun) {
+      await db
+        .update(issues)
+        .set({
+          executionRunId: newRun.id,
+          executionAgentNameKey: normalizeAgentNameKey(agent.name),
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issues.id, issueId),
+            eq(issues.companyId, agent.companyId),
+            eq(issues.executionRunId, sameScopeRunningRun.id),
+          ),
+        );
+    }
+
     publishLiveEvent({
       companyId: newRun.companyId,
       type: "heartbeat.run.queued",
