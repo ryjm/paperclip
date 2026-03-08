@@ -131,6 +131,16 @@ export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env, PATH: defaultPathForPlatform() };
 }
 
+export function deriveAgentHomeFromInstructionsFilePath(
+  instructionsFilePath: string,
+  cwd = process.cwd(),
+): string | null {
+  const trimmed = instructionsFilePath.trim();
+  if (!trimmed) return null;
+  const resolved = path.isAbsolute(trimmed) ? trimmed : path.resolve(cwd, trimmed);
+  return path.dirname(resolved);
+}
+
 function stripAmbientPaperclipEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const stripped: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(env)) {
