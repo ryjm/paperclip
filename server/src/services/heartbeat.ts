@@ -23,6 +23,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { ensureTaskScopedProjectWorkspace } from "./project-run-workspace.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -481,7 +482,7 @@ export function heartbeatService(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; taskKey?: string | null },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -518,6 +519,7 @@ export function heartbeatService(db: Db) {
 
     if (projectWorkspaceRows.length > 0) {
       const missingProjectCwds: string[] = [];
+      const isolationWarnings: string[] = [];
       let hasConfiguredProjectCwd = false;
       for (const workspace of projectWorkspaceRows) {
         const projectCwd = readNonEmptyString(workspace.cwd);
@@ -530,23 +532,40 @@ export function heartbeatService(db: Db) {
           .then((stats) => stats.isDirectory())
           .catch(() => false);
         if (projectCwdExists) {
-          return {
-            cwd: projectCwd,
-            source: "project_primary" as const,
-            projectId: resolvedProjectId,
-            workspaceId: workspace.id,
-            repoUrl: workspace.repoUrl,
-            repoRef: workspace.repoRef,
-            workspaceHints,
-            warnings: [],
-          };
+          try {
+            const isolatedWorkspace = await ensureTaskScopedProjectWorkspace({
+              agentId: agent.id,
+              projectId: resolvedProjectId,
+              taskKey: opts?.taskKey ?? null,
+              workspaceId: workspace.id,
+              projectCwd,
+              repoUrl: workspace.repoUrl ?? null,
+              repoRef: workspace.repoRef ?? null,
+            });
+            return {
+              cwd: isolatedWorkspace.cwd,
+              source: "project_primary" as const,
+              projectId: resolvedProjectId,
+              workspaceId: workspace.id,
+              repoUrl: workspace.repoUrl,
+              repoRef: workspace.repoRef,
+              workspaceHints,
+              warnings: isolatedWorkspace.warnings,
+            };
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            isolationWarnings.push(
+              `Could not prepare isolated workspace from "${projectCwd}": ${reason}`,
+            );
+          }
+          continue;
         }
         missingProjectCwds.push(projectCwd);
       }
 
       const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
       await fs.mkdir(fallbackCwd, { recursive: true });
-      const warnings: string[] = [];
+      const warnings: string[] = [...isolationWarnings];
       if (missingProjectCwds.length > 0) {
         const firstMissing = missingProjectCwds[0];
         const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
@@ -558,6 +577,10 @@ export function heartbeatService(db: Db) {
       } else if (!hasConfiguredProjectCwd) {
         warnings.push(
           `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
+        );
+      } else if (isolationWarnings.length > 0) {
+        warnings.push(
+          `Project workspace isolation was unavailable. Using fallback workspace "${fallbackCwd}" for this run.`,
         );
       }
       return {
@@ -1097,7 +1120,10 @@ export function heartbeatService(db: Db) {
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null },
+      {
+        useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        taskKey,
+      },
     );
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,

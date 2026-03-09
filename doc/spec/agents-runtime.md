@@ -60,6 +60,8 @@ For local adapters, set:
 - `graceSec` (time before force-kill after timeout/cancel)
 - optional env vars and extra CLI args
 
+If an assigned issue resolves to a project workspace with a local `cwd`, Paperclip uses that folder as the source workspace, then launches the run inside a task-scoped isolated checkout under the agent's Paperclip home. This prevents multiple agents or unrelated tasks from sharing one mutable working tree by default.
+
 ## 3.4 Prompt templates
 
 You can set:

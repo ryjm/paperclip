@@ -116,6 +116,8 @@ When a local agent run has no resolved project/session workspace, Paperclip fall
 
 This path honors `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` in non-default setups.
 
+When a project workspace has a local `cwd`, Paperclip now materializes a task-scoped workspace under that same agent home instead of pointing multiple runs at the shared source checkout. Git-backed project folders use `git worktree` when available; non-git folders fall back to an isolated directory copy.
+
 ## Quick Health Checks
 
 In another terminal:
