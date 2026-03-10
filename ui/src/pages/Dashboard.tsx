@@ -19,7 +19,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
+import { AlertTriangle, Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -209,6 +209,24 @@ export function Dashboard() {
 
       {data && (
         <>
+          {data.strandedTasks > 0 && (
+            <div className="flex items-center justify-between gap-3 rounded-md border border-red-300 bg-red-50 px-4 py-3 dark:border-red-500/25 dark:bg-red-950/60">
+              <div className="flex items-center gap-2.5">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+                <p className="text-sm text-red-900 dark:text-red-100">
+                  <span className="font-medium">{data.strandedTasks}</span>{" "}
+                  {data.strandedTasks === 1 ? "active task is" : "active tasks are"} still assigned to errored agents.
+                </p>
+              </div>
+              <Link
+                to="/inbox/all"
+                className="shrink-0 text-sm font-medium text-red-700 underline underline-offset-2 hover:text-red-900 dark:text-red-300 dark:hover:text-red-100"
+              >
+                Review in Inbox
+              </Link>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
             <MetricCard
               icon={Bot}
@@ -232,6 +250,7 @@ export function Dashboard() {
                 <span>
                   {data.tasks.open} open{", "}
                   {data.tasks.blocked} blocked
+                  {data.strandedTasks > 0 ? `, ${data.strandedTasks} stranded` : ""}
                 </span>
               }
             />

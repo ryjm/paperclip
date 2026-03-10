@@ -26,6 +26,7 @@ import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { shouldWakeAssigneeOnIssueUpdate } from "./issues-update-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
@@ -684,13 +685,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     }
 
-    const assigneeChanged = assigneeWillChange;
+    const shouldWakeUpdatedAssignee = shouldWakeAssigneeOnIssueUpdate({
+      actorType: req.actor.type,
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+      actorRunId: req.actor.type === "agent" ? req.actor.runId ?? null : null,
+      previousStatus: existing.status,
+      nextStatus: issue.status,
+      previousAssigneeAgentId: existing.assigneeAgentId,
+      nextAssigneeAgentId: issue.assigneeAgentId,
+    });
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
 
-      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      if (shouldWakeUpdatedAssignee && issue.assigneeAgentId) {
         wakeups.set(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
