@@ -37,4 +37,6 @@ Notes:
 - Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
+- Before launch, Paperclip attempts repo bootstrap from the run cwd via \`.envrc\` (\`direnv\`), \`flake.nix\` (\`nix develop\`), then \`shell.nix\` / \`default.nix\` (\`nix-shell\`) when available.
+- The selected bootstrap path, or the reason it was skipped, is recorded in run command notes so reviewers can tell whether repo-local verification ran inside the repo's dev shell.
 `;

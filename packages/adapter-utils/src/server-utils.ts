@@ -10,6 +10,11 @@ export interface RunProcessResult {
   stderr: string;
 }
 
+export interface WorkspaceBootstrapResolution {
+  env: Record<string, string>;
+  notes: string[];
+}
+
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
@@ -148,6 +153,202 @@ function stripAmbientPaperclipEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     stripped[key] = value;
   }
   return stripped;
+}
+
+function firstNonEmptyLine(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? ""
+  );
+}
+
+async function pathExists(candidate: string): Promise<boolean> {
+  return fs.access(candidate, fsConstants.F_OK).then(() => true).catch(() => false);
+}
+
+type WorkspaceBootstrapMarkers = {
+  envrcRoot: string | null;
+  flakeRoot: string | null;
+  shellNixPath: string | null;
+  defaultNixPath: string | null;
+};
+
+async function findWorkspaceBootstrapMarkers(startCwd: string): Promise<WorkspaceBootstrapMarkers> {
+  let current = path.resolve(startCwd);
+  let envrcRoot: string | null = null;
+  let flakeRoot: string | null = null;
+  let shellNixPath: string | null = null;
+  let defaultNixPath: string | null = null;
+
+  while (true) {
+    if (!envrcRoot && await pathExists(path.join(current, ".envrc"))) {
+      envrcRoot = current;
+    }
+    if (!flakeRoot && await pathExists(path.join(current, "flake.nix"))) {
+      flakeRoot = current;
+    }
+    if (!shellNixPath) {
+      const candidate = path.join(current, "shell.nix");
+      if (await pathExists(candidate)) shellNixPath = candidate;
+    }
+    if (!defaultNixPath) {
+      const candidate = path.join(current, "default.nix");
+      if (await pathExists(candidate)) defaultNixPath = candidate;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  return {
+    envrcRoot,
+    flakeRoot,
+    shellNixPath,
+    defaultNixPath,
+  };
+}
+
+type WorkspaceBootstrapCandidate = {
+  tool: "direnv" | "nix_develop" | "nix_shell";
+  command: string;
+  args: string[];
+  sourceDescription: string;
+  successNote: string;
+};
+
+function filteredStringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+}
+
+function parseEnvSnapshot(snapshot: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const entry of snapshot.split("\0")) {
+    if (!entry) continue;
+    const separator = entry.indexOf("=");
+    if (separator <= 0) continue;
+    env[entry.slice(0, separator)] = entry.slice(separator + 1);
+  }
+  return env;
+}
+
+async function commandExists(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  try {
+    await ensureCommandResolvable(command, cwd, env);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function resolveWorkspaceBootstrapEnv(
+  cwd: string,
+  env: Record<string, string>,
+): Promise<WorkspaceBootstrapResolution> {
+  const mergedEnv = filteredStringEnv(
+    ensurePathInEnv({
+      ...stripAmbientPaperclipEnv(process.env),
+      ...env,
+    }),
+  );
+  const markers = await findWorkspaceBootstrapMarkers(cwd);
+  const notes: string[] = [];
+  const candidates: WorkspaceBootstrapCandidate[] = [];
+
+  if (markers.envrcRoot) {
+    if (await commandExists("direnv", cwd, mergedEnv)) {
+      candidates.push({
+        tool: "direnv",
+        command: "direnv",
+        args: ["exec", markers.envrcRoot, "env", "-0"],
+        sourceDescription: `workspace bootstrap from ${path.join(markers.envrcRoot, ".envrc")} via direnv`,
+        successNote: `Loaded workspace bootstrap from ${path.join(markers.envrcRoot, ".envrc")} via direnv.`,
+      });
+    } else {
+      notes.push(
+        `Found ${path.join(markers.envrcRoot, ".envrc")} but \`direnv\` was not available in PATH; continuing without repo bootstrap.`,
+      );
+    }
+  }
+
+  if (markers.flakeRoot) {
+    if (await commandExists("nix", cwd, mergedEnv)) {
+      candidates.push({
+        tool: "nix_develop",
+        command: "nix",
+        args: ["develop", markers.flakeRoot, "--command", "env", "-0"],
+        sourceDescription: `workspace bootstrap from ${path.join(markers.flakeRoot, "flake.nix")} via nix develop`,
+        successNote: `Loaded workspace bootstrap from ${path.join(markers.flakeRoot, "flake.nix")} via nix develop.`,
+      });
+    } else {
+      notes.push(
+        `Found ${path.join(markers.flakeRoot, "flake.nix")} but \`nix\` was not available in PATH; continuing without repo bootstrap.`,
+      );
+    }
+  }
+
+  const nixShellEntry = markers.shellNixPath ?? markers.defaultNixPath;
+  if (nixShellEntry) {
+    if (await commandExists("nix-shell", cwd, mergedEnv)) {
+      candidates.push({
+        tool: "nix_shell",
+        command: "nix-shell",
+        args: [nixShellEntry, "--run", "env -0"],
+        sourceDescription: `workspace bootstrap from ${nixShellEntry} via nix-shell`,
+        successNote: `Loaded workspace bootstrap from ${nixShellEntry} via nix-shell.`,
+      });
+    } else {
+      notes.push(
+        `Found ${nixShellEntry} but \`nix-shell\` was not available in PATH; continuing without repo bootstrap.`,
+      );
+    }
+  }
+
+  for (const candidate of candidates) {
+    const probe = await runChildProcess(
+      `workspace-bootstrap-${candidate.tool}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      candidate.command,
+      candidate.args,
+      {
+        cwd,
+        env: mergedEnv,
+        timeoutSec: 120,
+        graceSec: 5,
+        onLog: async () => {},
+      },
+    );
+    if (probe.timedOut) {
+      notes.push(
+        `Attempted ${candidate.sourceDescription}, but the bootstrap command timed out; continuing without repo bootstrap.`,
+      );
+      continue;
+    }
+    if ((probe.exitCode ?? 1) !== 0) {
+      const detail =
+        firstNonEmptyLine(probe.stderr) ||
+        firstNonEmptyLine(probe.stdout) ||
+        `exit code ${probe.exitCode ?? -1}`;
+      notes.push(
+        `Attempted ${candidate.sourceDescription}, but the bootstrap command failed (${detail}); continuing without repo bootstrap.`,
+      );
+      continue;
+    }
+
+    const resolvedEnv = filteredStringEnv(ensurePathInEnv(parseEnvSnapshot(probe.stdout)));
+    return {
+      env: resolvedEnv,
+      notes: [...notes, candidate.successNote],
+    };
+  }
+
+  return {
+    env: mergedEnv,
+    notes,
+  };
 }
 
 export async function ensureAbsoluteDirectory(

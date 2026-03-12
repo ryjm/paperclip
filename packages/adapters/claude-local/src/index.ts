@@ -27,4 +27,8 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+
+Notes:
+- Before launch, Paperclip attempts repo bootstrap from the run cwd via \`.envrc\` (\`direnv\`), \`flake.nix\` (\`nix develop\`), then \`shell.nix\` / \`default.nix\` (\`nix-shell\`) when available.
+- The selected bootstrap path, or the reason it was skipped, is recorded in run command notes so reviewers can tell whether repo-local verification ran inside the repo's dev shell.
 `;

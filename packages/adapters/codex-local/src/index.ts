@@ -39,5 +39,7 @@ Operational fields:
 Notes:
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
 - Paperclip auto-injects local skills into Codex personal skills dir ("$CODEX_HOME/skills" or "~/.codex/skills") when missing, so Codex can discover "$paperclip" and related skills.
+- Before launch, Paperclip attempts repo bootstrap from the run cwd via \`.envrc\` (\`direnv\`), \`flake.nix\` (\`nix develop\`), then \`shell.nix\` / \`default.nix\` (\`nix-shell\`) when available.
+- The selected bootstrap path, or the reason it was skipped, is recorded in run command notes so reviewers can tell whether repo-local verification ran inside the repo's dev shell.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 `;

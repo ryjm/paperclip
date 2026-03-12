@@ -12,8 +12,8 @@ import {
   redactEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
-  ensurePathInEnv,
   deriveAgentHomeFromInstructionsFilePath,
+  resolveWorkspaceBootstrapEnv,
   renderTemplate,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -164,11 +164,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
+  const workspaceBootstrap = await resolveWorkspaceBootstrapEnv(cwd, env);
+  const runtimeEnv = workspaceBootstrap.env;
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
   await ensureOpenCodeModelConfiguredAndAvailable({
@@ -227,14 +224,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const commandNotes = (() => {
-    if (!resolvedInstructionsFilePath) return [] as string[];
+    if (!resolvedInstructionsFilePath) return [...workspaceBootstrap.notes];
     if (instructionsPrefix.length > 0) {
       return [
+        ...workspaceBootstrap.notes,
         `Loaded agent instructions from ${resolvedInstructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
       ];
     }
     return [
+      ...workspaceBootstrap.notes,
       `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
     ];
   })();
