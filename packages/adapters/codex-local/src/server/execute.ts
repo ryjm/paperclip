@@ -13,8 +13,8 @@ import {
   redactEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
-  ensurePathInEnv,
   deriveAgentHomeFromInstructionsFilePath,
+  resolveWorkspaceBootstrapEnv,
   renderTemplate,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -150,9 +150,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : [];
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const cwd = workspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   await ensureCodexSkillsInjected(onLog);
   const envConfig = parseObject(config.env);
@@ -201,8 +199,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (linkedIssueIds.length > 0) {
     env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   }
-  if (effectiveWorkspaceCwd) {
-    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
+  if (workspaceCwd) {
+    env.PAPERCLIP_WORKSPACE_CWD = workspaceCwd;
   }
   if (workspaceSource) {
     env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
@@ -250,8 +248,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const billingType = resolveCodexBillingType(env);
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const workspaceBootstrap = await resolveWorkspaceBootstrapEnv(cwd, env);
+  const runtimeEnv = workspaceBootstrap.env;
+  const billingType = resolveCodexBillingType(runtimeEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
@@ -297,18 +296,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
-  const commandNotes = (() => {
-    if (!instructionsFilePath) return [] as string[];
-    if (instructionsPrefix.length > 0) {
+  const commandNotes = [
+    ...workspaceBootstrap.notes,
+    ...(() => {
+      if (!instructionsFilePath) return [] as string[];
+      if (instructionsPrefix.length > 0) {
+        return [
+          `Loaded agent instructions from ${instructionsFilePath}`,
+          `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+        ];
+      }
       return [
-        `Loaded agent instructions from ${instructionsFilePath}`,
-        `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       ];
-    }
-    return [
-      `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-    ];
-  })();
+    })(),
+  ];
   const renderedPrompt = renderTemplate(promptTemplate, {
     agentId: agent.id,
     companyId: agent.companyId,
@@ -352,7 +354,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const proc = await runChildProcess(runId, command, args, {
       cwd,
-      env,
+      env: runtimeEnv,
       stdin: prompt,
       timeoutSec,
       graceSec,
