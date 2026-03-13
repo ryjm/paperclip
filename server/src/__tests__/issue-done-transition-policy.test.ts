@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildDoneEvidenceRequiredErrorResponse,
+  buildDoneEvidenceUnreachableErrorResponse,
   containsGitHubCommitOrPrLink,
   issueRequiresDoneEvidence,
   resolveDoneTransitionEvidenceComment,
@@ -65,6 +66,23 @@ describe("buildDoneEvidenceRequiredErrorResponse", () => {
         nonCode: "Remove the code label before marking done when the task did not require repository changes.",
       },
     });
+  });
+});
+
+describe("buildDoneEvidenceUnreachableErrorResponse", () => {
+  it("includes remote verification failure details", () => {
+    const payload = buildDoneEvidenceUnreachableErrorResponse(
+      "Commit abc1234 not found on github.com/acme/paperclip (public repo)",
+    );
+    expect(payload.error).toContain("not reachable on the remote repository");
+    expect(payload.error).toContain("Push the commit(s)");
+    expect(payload.details.remoteVerification).toMatchObject({
+      result: "unreachable",
+      detail: "Commit abc1234 not found on github.com/acme/paperclip (public repo)",
+      fix: "git push the branch containing the cited commit, then retry the done transition.",
+    });
+    // inherits base evidence details
+    expect(payload.details.requiredLabel).toBe("code");
   });
 });
 
