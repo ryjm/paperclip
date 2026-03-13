@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import detectPort from "detect-port";
 import EmbeddedPostgres from "embedded-postgres";
 import { applyPendingMigrations, companies, createDb, ensurePostgresDatabase } from "@paperclipai/db";
@@ -116,6 +116,34 @@ describe("issue done transition route", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("done");
     expect(res.body.labelIds).toEqual([]);
+  });
+
+  it("rejects done when commit evidence is local-only (not on remote)", async () => {
+    const issue = await createCodeIssue();
+    const originalFetch = globalThis.fetch;
+    // Mock: commit 404, repo 200 (public) → commit is local-only
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "Done in https://github.com/acme/paperclip/commit/deadbeef1234567",
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("not reachable on the remote repository");
+      expect(res.body.details.remoteVerification).toMatchObject({
+        result: "unreachable",
+        fix: "git push the branch containing the cited commit, then retry the done transition.",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("allows done without a new comment when the latest existing comment has a GitHub link", async () => {
