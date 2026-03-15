@@ -27,6 +27,7 @@ import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import { verifyGitHubEvidenceIsRemoteVisible } from "./github-evidence.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const GITHUB_COMMIT_OR_PR_LINK_RE =
@@ -85,6 +86,22 @@ export function buildDoneEvidenceRequiredErrorResponse() {
   return {
     error: DONE_EVIDENCE_REQUIRED_ERROR,
     details: buildDoneEvidenceRequiredDetails(),
+  };
+}
+
+export function buildDoneEvidenceUnreachableErrorResponse(remoteError: string) {
+  return {
+    error:
+      "Cannot mark issue done: commit evidence is not reachable on the remote repository. " +
+      "Push the commit(s) to the tracked remote before closing, or use a pull request link instead.",
+    details: {
+      ...buildDoneEvidenceRequiredDetails(),
+      remoteVerification: {
+        result: "unreachable",
+        detail: remoteError,
+        fix: "git push the branch containing the cited commit, then retry the done transition.",
+      },
+    },
   };
 }
 
@@ -682,6 +699,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
         const evidenceCommentBody = resolveDoneTransitionEvidenceComment(commentBody, latestExistingCommentBody);
         if (!containsGitHubCommitOrPrLink(evidenceCommentBody)) {
           res.status(422).json(buildDoneEvidenceRequiredErrorResponse());
+          return;
+        }
+
+        // Verify commit evidence is actually reachable on the remote
+        const remoteCheck = await verifyGitHubEvidenceIsRemoteVisible(evidenceCommentBody!);
+        if (!remoteCheck.valid) {
+          res.status(422).json(buildDoneEvidenceUnreachableErrorResponse(remoteCheck.error!));
           return;
         }
       }
