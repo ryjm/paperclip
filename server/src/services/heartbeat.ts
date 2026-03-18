@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -530,6 +530,36 @@ export function heartbeatService(db: Db) {
           .then((stats) => stats.isDirectory())
           .catch(() => false);
         if (projectCwdExists) {
+          const conflictingRun = await db
+            .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.workspaceCwd, projectCwd),
+                eq(heartbeatRuns.status, "running"),
+                ne(heartbeatRuns.agentId, agent.id),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          if (conflictingRun) {
+            const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+            await fs.mkdir(fallbackCwd, { recursive: true });
+            return {
+              cwd: fallbackCwd,
+              source: "agent_home" as const,
+              projectId: resolvedProjectId,
+              workspaceId: workspace.id,
+              repoUrl: workspace.repoUrl,
+              repoRef: workspace.repoRef,
+              workspaceHints,
+              warnings: [
+                `Project workspace "${projectCwd}" is already in use by another agent's active run (${conflictingRun.id}). Using isolated fallback workspace "${fallbackCwd}" to prevent cross-agent contamination.`,
+              ],
+            };
+          }
+
           return {
             cwd: projectCwd,
             source: "project_primary" as const,
@@ -1154,6 +1184,7 @@ export function heartbeatService(db: Db) {
         .set({
           startedAt,
           sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
+          workspaceCwd: resolvedWorkspace.cwd,
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id))
