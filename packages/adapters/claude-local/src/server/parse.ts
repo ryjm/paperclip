@@ -3,6 +3,172 @@ import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
+const CLAUDE_QUOTA_SIGNAL_RE =
+  /(?:out of extra usage|out_of_credits|overageDisabledReason\s*=\s*out_of_credits|usage limit)/i;
+const CLAUDE_RESET_RE = /\bresets?\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*\(([^)]+)\))?/i;
+
+interface ClaudeWakeCooldown {
+  kind: "provider_quota_reset";
+  scope: "agent";
+  provider: string;
+  adapterType: string;
+  errorCode: string;
+  message: string;
+  resetAt: string;
+  resetLabel: string | null;
+  timezone: string | null;
+  detectedAt: string;
+  sourceRunId: string | null;
+}
+
+function collectClaudeMessages(input: {
+  parsed: Record<string, unknown> | null;
+  stdout: string;
+  stderr: string;
+}): string[] {
+  const resultText = asString(input.parsed?.result, "").trim();
+  const raw = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return [...new Set(raw)];
+}
+
+function parseClockLabel(value: string) {
+  const match = value.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+  if (!match) return null;
+
+  const hour12 = Number.parseInt(match[1] ?? "", 10);
+  const minute = Number.parseInt(match[2] ?? "0", 10);
+  const meridiem = (match[3] ?? "").toLowerCase();
+  if (!Number.isFinite(hour12) || hour12 < 1 || hour12 > 12 || !Number.isFinite(minute) || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  const hour = meridiem === "pm"
+    ? (hour12 % 12) + 12
+    : hour12 % 12;
+  return { hour, minute };
+}
+
+function timeZoneFormatter(timeZone: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function readTimeZoneParts(date: Date, timeZone: string) {
+  try {
+    const formatted = timeZoneFormatter(timeZone).formatToParts(date);
+    const lookup = (type: Intl.DateTimeFormatPartTypes) =>
+      formatted.find((part) => part.type === type)?.value ?? "";
+    const year = Number.parseInt(lookup("year"), 10);
+    const month = Number.parseInt(lookup("month"), 10);
+    const day = Number.parseInt(lookup("day"), 10);
+    const hour = Number.parseInt(lookup("hour"), 10);
+    const minute = Number.parseInt(lookup("minute"), 10);
+    const second = Number.parseInt(lookup("second"), 10);
+    if ([year, month, day, hour, minute, second].some((part) => !Number.isFinite(part))) {
+      return null;
+    }
+    return { year, month, day, hour, minute, second };
+  } catch {
+    return null;
+  }
+}
+
+function readTimeZoneOffsetMs(date: Date, timeZone: string) {
+  const parts = readTimeZoneParts(date, timeZone);
+  if (!parts) return null;
+  const zonedMillis = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+  );
+  return zonedMillis - date.getTime();
+}
+
+function zonedLocalDateTimeToUtc(input: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  timeZone: string;
+}) {
+  const utcGuess = Date.UTC(
+    input.year,
+    input.month - 1,
+    input.day,
+    input.hour,
+    input.minute,
+    input.second,
+  );
+  const firstOffset = readTimeZoneOffsetMs(new Date(utcGuess), input.timeZone);
+  if (firstOffset === null) return null;
+
+  let utcMillis = utcGuess - firstOffset;
+  const secondOffset = readTimeZoneOffsetMs(new Date(utcMillis), input.timeZone);
+  if (secondOffset !== null && secondOffset !== firstOffset) {
+    utcMillis = utcGuess - secondOffset;
+  }
+  return new Date(utcMillis);
+}
+
+function resolveResetAt(input: {
+  resetLabel: string;
+  timeZone: string | null;
+  now: Date;
+}) {
+  const parsedClock = parseClockLabel(input.resetLabel);
+  const timeZone = input.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
+  if (!parsedClock || !timeZone) return null;
+
+  const todayInZone = readTimeZoneParts(input.now, timeZone);
+  if (!todayInZone) return null;
+
+  const buildCandidate = (year: number, month: number, day: number) =>
+    zonedLocalDateTimeToUtc({
+      year,
+      month,
+      day,
+      hour: parsedClock.hour,
+      minute: parsedClock.minute,
+      second: 0,
+      timeZone,
+    });
+
+  let candidate = buildCandidate(todayInZone.year, todayInZone.month, todayInZone.day);
+  if (!candidate) return null;
+
+  if (candidate.getTime() <= input.now.getTime()) {
+    const nextDay = new Date(Date.UTC(todayInZone.year, todayInZone.month - 1, todayInZone.day + 1));
+    candidate = buildCandidate(
+      nextDay.getUTCFullYear(),
+      nextDay.getUTCMonth() + 1,
+      nextDay.getUTCDate(),
+    );
+    if (!candidate) return null;
+  }
+
+  return {
+    resetAt: candidate,
+    timeZone,
+  };
+}
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -124,17 +290,57 @@ export function detectClaudeLoginRequired(input: {
   stdout: string;
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
-  const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const messages = collectClaudeMessages(input);
 
   const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
   return {
     requiresLogin,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
+  };
+}
+
+export function detectClaudeQuotaCooldown(input: {
+  parsed: Record<string, unknown> | null;
+  stdout: string;
+  stderr: string;
+  now?: Date;
+}): ClaudeWakeCooldown | null {
+  const now = input.now ?? new Date();
+  const messages = collectClaudeMessages(input);
+  const matchingLine = messages.find(
+    (line) => CLAUDE_QUOTA_SIGNAL_RE.test(line) && CLAUDE_RESET_RE.test(line),
+  );
+  const combined = messages.join("\n");
+  const sourceText =
+    matchingLine ??
+    (CLAUDE_QUOTA_SIGNAL_RE.test(combined) && CLAUDE_RESET_RE.test(combined) ? combined : null);
+  if (!sourceText) return null;
+
+  const resetMatch = sourceText.match(CLAUDE_RESET_RE);
+  if (!resetMatch) return null;
+
+  const resetLabel = resetMatch[1]?.trim() ?? null;
+  if (!resetLabel) return null;
+  const explicitTimeZone = resetMatch[2]?.trim() || null;
+  const resolvedReset = resolveResetAt({
+    resetLabel,
+    timeZone: explicitTimeZone,
+    now,
+  });
+  if (!resolvedReset) return null;
+
+  return {
+    kind: "provider_quota_reset",
+    scope: "agent",
+    provider: "anthropic",
+    adapterType: "claude_local",
+    errorCode: "claude_quota_cooldown",
+    message: matchingLine ?? sourceText,
+    resetAt: resolvedReset.resetAt.toISOString(),
+    resetLabel,
+    timezone: explicitTimeZone ?? resolvedReset.timeZone,
+    detectedAt: now.toISOString(),
+    sourceRunId: null,
   };
 }
 

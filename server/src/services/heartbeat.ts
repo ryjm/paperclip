@@ -4,7 +4,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import type { BillingType } from "@paperclipai/shared";
+import type { AgentWakeCooldown, BillingType } from "@paperclipai/shared";
 import {
   agents,
   agentRuntimeState,
@@ -201,6 +201,7 @@ interface WakeupOptions {
   reason?: string | null;
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
+  overrideCooldown?: boolean;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
@@ -609,6 +610,83 @@ function normalizeAgentNameKey(value: string | null | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
+function coerceAgentWakeCooldown(raw: unknown): AgentWakeCooldown | null {
+  const parsed = parseObject(raw);
+  const kind = readNonEmptyString(parsed.kind);
+  const scope = readNonEmptyString(parsed.scope);
+  const provider = readNonEmptyString(parsed.provider);
+  const adapterType = readNonEmptyString(parsed.adapterType);
+  const errorCode = readNonEmptyString(parsed.errorCode);
+  const message = readNonEmptyString(parsed.message);
+  const resetAt = readNonEmptyString(parsed.resetAt);
+  const detectedAt = readNonEmptyString(parsed.detectedAt);
+  if (
+    kind !== "provider_quota_reset" ||
+    scope !== "agent" ||
+    !provider ||
+    !adapterType ||
+    !errorCode ||
+    !message ||
+    !resetAt ||
+    !detectedAt
+  ) {
+    return null;
+  }
+
+  if (Number.isNaN(new Date(resetAt).getTime()) || Number.isNaN(new Date(detectedAt).getTime())) {
+    return null;
+  }
+
+  return {
+    kind: "provider_quota_reset",
+    scope: "agent",
+    provider,
+    adapterType,
+    errorCode,
+    message,
+    resetAt,
+    resetLabel: readNonEmptyString(parsed.resetLabel),
+    timezone: readNonEmptyString(parsed.timezone),
+    detectedAt,
+    sourceRunId: readNonEmptyString(parsed.sourceRunId),
+  };
+}
+
+function readAgentWakeCooldown(metadata: unknown): AgentWakeCooldown | null {
+  const parsed = parseObject(metadata);
+  return coerceAgentWakeCooldown(parsed.paperclipWakeCooldown);
+}
+
+function mergeAgentWakeCooldownMetadata(
+  metadata: unknown,
+  cooldown: AgentWakeCooldown | null,
+): Record<string, unknown> | null {
+  const next = { ...parseObject(metadata) };
+  if (cooldown) {
+    next.paperclipWakeCooldown = cooldown;
+  } else {
+    delete next.paperclipWakeCooldown;
+  }
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+function isWakeCooldownActive(cooldown: AgentWakeCooldown, now = new Date()) {
+  return new Date(cooldown.resetAt).getTime() > now.getTime();
+}
+
+function extractWakeCooldownFromResult(
+  result: AdapterExecutionResult,
+  runId: string,
+): AgentWakeCooldown | null {
+  const errorMeta = parseObject(result.errorMeta);
+  const wakeCooldown = coerceAgentWakeCooldown(errorMeta.wakeCooldown);
+  if (!wakeCooldown) return null;
+  return {
+    ...wakeCooldown,
+    sourceRunId: runId,
+  };
+}
+
 const defaultSessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     const asObj = parseObject(raw);
@@ -712,6 +790,21 @@ export function heartbeatService(db: Db) {
       .select()
       .from(agents)
       .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function setAgentWakeCooldown(agentId: string, cooldown: AgentWakeCooldown | null) {
+    const agent = await getAgent(agentId);
+    if (!agent) return null;
+    const metadata = mergeAgentWakeCooldownMetadata(agent.metadata, cooldown);
+    return db
+      .update(agents)
+      .set({
+        metadata,
+        updatedAt: new Date(),
+      })
+      .where(eq(agents.id, agentId))
+      .returning()
       .then((rows) => rows[0] ?? null);
   }
 
@@ -1404,6 +1497,7 @@ export function heartbeatService(db: Db) {
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    opts?: { treatFailureAsIdle?: boolean },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -1416,7 +1510,9 @@ export function heartbeatService(db: Db) {
     const nextStatus =
       runningCount > 0
         ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
+        : outcome === "succeeded" ||
+            outcome === "cancelled" ||
+            ((outcome === "failed" || outcome === "timed_out") && opts?.treatFailureAsIdle)
           ? "idle"
           : "error";
 
@@ -1619,45 +1715,45 @@ export function heartbeatService(db: Db) {
     activeRunExecutions.add(run.id);
 
     try {
-    const agent = await getAgent(run.agentId);
-    if (!agent) {
-      await setRunStatus(runId, "failed", {
-        error: "Agent not found",
-        errorCode: "agent_not_found",
-        finishedAt: new Date(),
-      });
-      await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: new Date(),
-        error: "Agent not found",
-      });
-      const failedRun = await getRun(runId);
-      if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
-      return;
-    }
+      let agent = await getAgent(run.agentId);
+      if (!agent) {
+        await setRunStatus(runId, "failed", {
+          error: "Agent not found",
+          errorCode: "agent_not_found",
+          finishedAt: new Date(),
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: new Date(),
+          error: "Agent not found",
+        });
+        const failedRun = await getRun(runId);
+        if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+        return;
+      }
 
-    const runtime = await ensureRuntimeState(agent);
-    const context = parseObject(run.contextSnapshot);
-    const taskKey = deriveTaskKey(context, null);
-    const sessionCodec = getAdapterSessionCodec(agent.adapterType);
-    const issueId = readNonEmptyString(context.issueId);
-    const issueContext = issueId
-      ? await db
-          .select({
-            id: issues.id,
-            identifier: issues.identifier,
-            title: issues.title,
-            projectId: issues.projectId,
-            projectWorkspaceId: issues.projectWorkspaceId,
-            executionWorkspaceId: issues.executionWorkspaceId,
-            executionWorkspacePreference: issues.executionWorkspacePreference,
-            assigneeAgentId: issues.assigneeAgentId,
-            assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
-            executionWorkspaceSettings: issues.executionWorkspaceSettings,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
+      const runtime = await ensureRuntimeState(agent);
+      const context = parseObject(run.contextSnapshot);
+      const taskKey = deriveTaskKey(context, null);
+      const sessionCodec = getAdapterSessionCodec(agent.adapterType);
+      const issueId = readNonEmptyString(context.issueId);
+      const issueContext = issueId
+        ? await db
+            .select({
+              id: issues.id,
+              identifier: issues.identifier,
+              title: issues.title,
+              projectId: issues.projectId,
+              projectWorkspaceId: issues.projectWorkspaceId,
+              executionWorkspaceId: issues.executionWorkspaceId,
+              executionWorkspacePreference: issues.executionWorkspacePreference,
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+              executionWorkspaceSettings: issues.executionWorkspaceSettings,
+            })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
@@ -2230,6 +2326,13 @@ export function heartbeatService(db: Db) {
         outcome = "failed";
       }
 
+      const wakeCooldown = extractWakeCooldownFromResult(adapterResult, run.id);
+      if (wakeCooldown) {
+        agent = (await setAgentWakeCooldown(agent.id, wakeCooldown)) ?? agent;
+      } else if ((outcome === "succeeded" || outcome === "cancelled") && readAgentWakeCooldown(agent.metadata)) {
+        agent = (await setAgentWakeCooldown(agent.id, null)) ?? agent;
+      }
+
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
@@ -2342,7 +2445,9 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, {
+        treatFailureAsIdle: Boolean(wakeCooldown),
+      });
     } catch (err) {
       const message = redactCurrentUserText(err instanceof Error ? err.message : "Unknown adapter failure");
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -2613,17 +2718,20 @@ export function heartbeatService(db: Db) {
     });
     const issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
 
-    const agent = await getAgent(agentId);
+    let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
 
-    const writeSkippedRequest = async (skipReason: string) => {
+    const writeSkippedRequest = async (
+      skipReason: string,
+      skippedPayload: Record<string, unknown> | null = payload,
+    ) => {
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
         source,
         triggerDetail,
         reason: skipReason,
-        payload,
+        payload: skippedPayload,
         status: "skipped",
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
@@ -2662,6 +2770,25 @@ export function heartbeatService(db: Db) {
     }
 
     const policy = parseHeartbeatPolicy(agent);
+
+    const activeWakeCooldown = readAgentWakeCooldown(agent.metadata);
+    const allowCooldownOverride =
+      opts.overrideCooldown === true &&
+      opts.requestedByActorType === "user" &&
+      source === "on_demand" &&
+      triggerDetail === "manual";
+
+    if (activeWakeCooldown) {
+      if (!isWakeCooldownActive(activeWakeCooldown)) {
+        agent = (await setAgentWakeCooldown(agent.id, null)) ?? agent;
+      } else if (!allowCooldownOverride) {
+        await writeSkippedRequest("agent_wake_cooldown.active", {
+          ...(payload ?? {}),
+          paperclipWakeCooldown: activeWakeCooldown,
+        });
+        return null;
+      }
+    }
 
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled");

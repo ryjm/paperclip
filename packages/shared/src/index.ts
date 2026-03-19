@@ -124,6 +124,7 @@ export type {
   InstanceSettings,
   Agent,
   AgentPermissions,
+  AgentWakeCooldown,
   AgentKeyCreated,
   AgentConfigRevision,
   AdapterEnvironmentCheckLevel,
