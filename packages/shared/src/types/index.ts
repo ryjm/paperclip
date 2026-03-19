@@ -3,6 +3,7 @@ export type { InstanceExperimentalSettings, InstanceSettings } from "./instance.
 export type {
   Agent,
   AgentPermissions,
+  AgentWakeCooldown,
   AgentKeyCreated,
   AgentConfigRevision,
   AdapterEnvironmentCheckLevel,

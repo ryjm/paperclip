@@ -82,6 +82,7 @@ export const wakeAgentSchema = z.object({
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),
   ),
+  overrideCooldown: z.boolean().optional(),
 });
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
