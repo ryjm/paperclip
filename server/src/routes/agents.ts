@@ -1315,6 +1315,7 @@ export function agentRoutes(db: Db) {
       reason: req.body.reason ?? null,
       payload: req.body.payload ?? null,
       idempotencyKey: req.body.idempotencyKey ?? null,
+      overrideCooldown: req.body.overrideCooldown === true,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot: {
