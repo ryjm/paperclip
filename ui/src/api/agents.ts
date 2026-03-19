@@ -177,6 +177,7 @@ export const agentsApi = {
       reason?: string | null;
       payload?: Record<string, unknown> | null;
       idempotencyKey?: string | null;
+      overrideCooldown?: boolean;
     },
     companyId?: string,
   ) => api.post<HeartbeatRun | { status: "skipped" }>(agentPath(id, companyId, "/wakeup"), data),

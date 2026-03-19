@@ -25,6 +25,7 @@ import {
 import {
   parseClaudeStreamJson,
   describeClaudeFailure,
+  detectClaudeQuotaCooldown,
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
@@ -489,10 +490,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: proc.stdout,
       stderr: proc.stderr,
     });
+    const quotaCooldown = detectClaudeQuotaCooldown({
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+    });
     const errorMeta =
-      loginMeta.loginUrl != null
+      loginMeta.loginUrl != null || quotaCooldown
         ? {
-            loginUrl: loginMeta.loginUrl,
+            ...(loginMeta.loginUrl != null ? { loginUrl: loginMeta.loginUrl } : {}),
+            ...(quotaCooldown ? { wakeCooldown: quotaCooldown } : {}),
           }
         : undefined;
 
@@ -557,7 +564,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode:
+        loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : quotaCooldown?.errorCode ?? null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,

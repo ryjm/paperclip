@@ -12,6 +12,10 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import {
+  formatAgentWakeCooldownDeadline,
+  getActiveAgentWakeCooldown,
+} from "../lib/agent-wake-cooldown";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { IssueRow } from "../components/IssueRow";
@@ -33,12 +37,13 @@ import {
 import {
   Inbox as InboxIcon,
   AlertTriangle,
+  Clock,
   XCircle,
   X,
   RotateCcw,
 } from "lucide-react";
 import { PageTabBar } from "../components/PageTabBar";
-import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Agent, Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   getApprovalsForTab,
@@ -93,6 +98,7 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
 
 function FailedRunInboxRow({
   run,
+  agent,
   issueById,
   agentName: linkedAgentName,
   issueLinkState,
@@ -101,16 +107,27 @@ function FailedRunInboxRow({
   isRetrying,
 }: {
   run: HeartbeatRun;
+  agent: Agent | null;
   issueById: Map<string, Issue>;
   agentName: string | null;
   issueLinkState: unknown;
   onDismiss: () => void;
-  onRetry: () => void;
+  onRetry: (input?: { overrideCooldown?: boolean }) => void;
   isRetrying: boolean;
 }) {
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
   const displayError = runFailureMessage(run);
+  const activeWakeCooldown = getActiveAgentWakeCooldown(agent);
+  const cooldownDeadline = activeWakeCooldown
+    ? formatAgentWakeCooldownDeadline(activeWakeCooldown)
+    : null;
+  const retryLabel = isRetrying
+    ? "Retrying…"
+    : activeWakeCooldown
+      ? "Override cooldown"
+      : "Retry";
+  const retryInput = activeWakeCooldown ? { overrideCooldown: true } : undefined;
 
   return (
     <div className="group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2">
@@ -121,8 +138,16 @@ function FailedRunInboxRow({
         >
           <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />
           <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
-          <span className="mt-0.5 shrink-0 rounded-md bg-red-500/20 p-1.5 sm:mt-0">
-            <XCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
+          <span
+            className={`mt-0.5 shrink-0 rounded-md p-1.5 sm:mt-0 ${
+              activeWakeCooldown ? "bg-amber-500/20" : "bg-red-500/20"
+            }`}
+          >
+            {activeWakeCooldown ? (
+              <Clock className="h-4 w-4 text-amber-600 dark:text-amber-300" />
+            ) : (
+              <XCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
+            )}
           </span>
           <span className="min-w-0 flex-1">
             <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">
@@ -141,8 +166,13 @@ function FailedRunInboxRow({
               <StatusBadge status={run.status} />
               {linkedAgentName && issue ? <span>{linkedAgentName}</span> : null}
               <span className="truncate max-w-[300px]">{displayError}</span>
-              <span>{timeAgo(run.createdAt)}</span>
+              <span>{activeWakeCooldown ? `cooldown until ${cooldownDeadline}` : timeAgo(run.createdAt)}</span>
             </span>
+            {activeWakeCooldown && (
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Wake requests are being suppressed until {cooldownDeadline} unless you override the cooldown.
+              </span>
+            )}
           </span>
         </Link>
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
@@ -151,11 +181,11 @@ function FailedRunInboxRow({
             variant="outline"
             size="sm"
             className="h-8 shrink-0 px-2.5"
-            onClick={onRetry}
+            onClick={() => onRetry(retryInput)}
             disabled={isRetrying}
           >
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            {isRetrying ? "Retrying…" : "Retry"}
+            {retryLabel}
           </Button>
           <button
             type="button"
@@ -173,11 +203,11 @@ function FailedRunInboxRow({
           variant="outline"
           size="sm"
           className="h-8 shrink-0 px-2.5"
-          onClick={onRetry}
+          onClick={() => onRetry(retryInput)}
           disabled={isRetrying}
         >
           <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          {isRetrying ? "Retrying…" : "Retry"}
+          {retryLabel}
         </Button>
         <button
           type="button"
@@ -388,8 +418,8 @@ export function Inbox() {
   );
 
   const agentById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const agent of agents ?? []) map.set(agent.id, agent.name);
+    const map = new Map<string, Agent>();
+    for (const agent of agents ?? []) map.set(agent.id, agent);
     return map;
   }, [agents]);
 
@@ -443,7 +473,7 @@ export function Inbox() {
 
   const agentName = (id: string | null) => {
     if (!id) return null;
-    return agentById.get(id) ?? null;
+    return agentById.get(id)?.name ?? null;
   };
 
   const approveMutation = useMutation({
@@ -500,7 +530,8 @@ export function Inbox() {
   const [retryingRunIds, setRetryingRunIds] = useState<Set<string>>(new Set());
 
   const retryRunMutation = useMutation({
-    mutationFn: async (run: HeartbeatRun) => {
+    mutationFn: async (input: { run: HeartbeatRun; overrideCooldown?: boolean }) => {
+      const { run, overrideCooldown = false } = input;
       const payload: Record<string, unknown> = {};
       const context = run.contextSnapshot as Record<string, unknown> | null;
       if (context) {
@@ -513,13 +544,14 @@ export function Inbox() {
         triggerDetail: "manual",
         reason: "retry_failed_run",
         payload,
+        overrideCooldown,
       });
       if (!("id" in result)) {
         throw new Error("Retry was skipped because the agent is not currently invokable.");
       }
       return { newRun: result, originalRun: run };
     },
-    onMutate: (run) => {
+    onMutate: ({ run }) => {
       setRetryingRunIds((prev) => new Set(prev).add(run.id));
     },
     onSuccess: ({ newRun, originalRun }) => {
@@ -527,11 +559,11 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
       navigate(`/agents/${originalRun.agentId}/runs/${newRun.id}`);
     },
-    onSettled: (_data, _error, run) => {
-      if (!run) return;
+    onSettled: (_data, _error, input) => {
+      if (!input) return;
       setRetryingRunIds((prev) => {
         const next = new Set(prev);
-        next.delete(run.id);
+        next.delete(input.run.id);
         return next;
       });
     },
@@ -747,11 +779,17 @@ export function Inbox() {
                     <FailedRunInboxRow
                       key={`run:${item.run.id}`}
                       run={item.run}
+                      agent={agentById.get(item.run.agentId) ?? null}
                       issueById={issueById}
                       agentName={agentName(item.run.agentId)}
                       issueLinkState={issueLinkState}
                       onDismiss={() => dismiss(`run:${item.run.id}`)}
-                      onRetry={() => retryRunMutation.mutate(item.run)}
+                      onRetry={(input) =>
+                        retryRunMutation.mutate({
+                          run: item.run,
+                          overrideCooldown: input?.overrideCooldown === true,
+                        })
+                      }
                       isRetrying={retryingRunIds.has(item.run.id)}
                     />
                   );
@@ -862,7 +900,6 @@ export function Inbox() {
           </div>
         </>
       )}
-
 
       {showAlertsSection && (
         <>

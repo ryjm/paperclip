@@ -39,6 +39,7 @@ export type {
   AgentInstructionsFileSummary,
   AgentInstructionsFileDetail,
   AgentInstructionsBundle,
+  AgentWakeCooldown,
   AgentKeyCreated,
   AgentConfigRevision,
   AdapterEnvironmentCheckLevel,
