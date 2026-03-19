@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -16,6 +17,8 @@ import {
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { issueService } from "./issues.js";
+import { logActivity } from "./activity-log.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
@@ -23,6 +26,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { ensureTaskScopedProjectWorkspace } from "./project-run-workspace.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -30,6 +34,10 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const STRANDED_ISSUE_STATUSES = ["todo", "in_progress"] as const;
+type StrandedIssueStatus = (typeof STRANDED_ISSUE_STATUSES)[number];
+const RECOVERY_ELIGIBLE_AGENT_STATUSES = new Set(["active", "idle", "running"]);
+const linkedAssignee = alias(agents, "linked_assignee");
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -406,6 +414,7 @@ function resolveNextSessionState(input: {
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const issueSvc = issueService(db);
 
   async function getAgent(agentId: string) {
     return db
@@ -481,7 +490,7 @@ export function heartbeatService(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; taskKey?: string | null },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -494,7 +503,34 @@ export function heartbeatService(db: Db) {
       : null;
     const resolvedProjectId = issueProjectId ?? contextProjectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
-    const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
+
+    // When no project is resolved from issue/context, try to infer from the
+    // agent's configured cwd.  This ensures agents waking without task context
+    // (e.g. periodic heartbeats, idle discovery) still get workspace isolation
+    // instead of falling back to the shared project checkout.
+    let inferredProjectId = resolvedProjectId;
+    if (!inferredProjectId && useProjectWorkspace) {
+      const agentConfigCwd = readNonEmptyString(
+        parseObject(agent.adapterConfig).cwd,
+      );
+      if (agentConfigCwd) {
+        const matchByConfigCwd = await db
+          .select({ projectId: projectWorkspaces.projectId })
+          .from(projectWorkspaces)
+          .where(
+            and(
+              eq(projectWorkspaces.companyId, agent.companyId),
+              eq(projectWorkspaces.cwd, agentConfigCwd),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0]?.projectId ?? null);
+        if (matchByConfigCwd) {
+          inferredProjectId = matchByConfigCwd;
+        }
+      }
+    }
+    const workspaceProjectId = useProjectWorkspace ? inferredProjectId : null;
 
     const projectWorkspaceRows = workspaceProjectId
       ? await db
@@ -518,6 +554,7 @@ export function heartbeatService(db: Db) {
 
     if (projectWorkspaceRows.length > 0) {
       const missingProjectCwds: string[] = [];
+      const isolationWarnings: string[] = [];
       let hasConfiguredProjectCwd = false;
       for (const workspace of projectWorkspaceRows) {
         const projectCwd = readNonEmptyString(workspace.cwd);
@@ -530,23 +567,40 @@ export function heartbeatService(db: Db) {
           .then((stats) => stats.isDirectory())
           .catch(() => false);
         if (projectCwdExists) {
-          return {
-            cwd: projectCwd,
-            source: "project_primary" as const,
-            projectId: resolvedProjectId,
-            workspaceId: workspace.id,
-            repoUrl: workspace.repoUrl,
-            repoRef: workspace.repoRef,
-            workspaceHints,
-            warnings: [],
-          };
+          try {
+            const isolatedWorkspace = await ensureTaskScopedProjectWorkspace({
+              agentId: agent.id,
+              projectId: resolvedProjectId,
+              taskKey: opts?.taskKey ?? null,
+              workspaceId: workspace.id,
+              projectCwd,
+              repoUrl: workspace.repoUrl ?? null,
+              repoRef: workspace.repoRef ?? null,
+            });
+            return {
+              cwd: isolatedWorkspace.cwd,
+              source: "project_primary" as const,
+              projectId: resolvedProjectId,
+              workspaceId: workspace.id,
+              repoUrl: workspace.repoUrl,
+              repoRef: workspace.repoRef,
+              workspaceHints,
+              warnings: isolatedWorkspace.warnings,
+            };
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            isolationWarnings.push(
+              `Could not prepare isolated workspace from "${projectCwd}": ${reason}`,
+            );
+          }
+          continue;
         }
         missingProjectCwds.push(projectCwd);
       }
 
       const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
       await fs.mkdir(fallbackCwd, { recursive: true });
-      const warnings: string[] = [];
+      const warnings: string[] = [...isolationWarnings];
       if (missingProjectCwds.length > 0) {
         const firstMissing = missingProjectCwds[0];
         const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
@@ -558,6 +612,10 @@ export function heartbeatService(db: Db) {
       } else if (!hasConfiguredProjectCwd) {
         warnings.push(
           `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
+        );
+      } else if (isolationWarnings.length > 0) {
+        warnings.push(
+          `Project workspace isolation was unavailable. Using fallback workspace "${fallbackCwd}" for this run.`,
         );
       }
       return {
@@ -579,6 +637,59 @@ export function heartbeatService(db: Db) {
         .then((stats) => stats.isDirectory())
         .catch(() => false);
       if (sessionCwdExists) {
+        // Guard: if the session cwd matches a project workspace path, redirect
+        // to an isolated worktree instead of reusing the shared checkout.  This
+        // prevents agents with stale session state from operating directly in
+        // the shared project directory, which would allow concurrent overwrites.
+        if (useProjectWorkspace) {
+          const sessionWorkspaceMatch = await db
+            .select()
+            .from(projectWorkspaces)
+            .where(
+              and(
+                eq(projectWorkspaces.companyId, agent.companyId),
+                eq(projectWorkspaces.cwd, sessionCwd),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (sessionWorkspaceMatch) {
+            try {
+              const isolatedWorkspace = await ensureTaskScopedProjectWorkspace({
+                agentId: agent.id,
+                projectId: sessionWorkspaceMatch.projectId,
+                taskKey: opts?.taskKey ?? null,
+                workspaceId: sessionWorkspaceMatch.id,
+                projectCwd: sessionCwd,
+                repoUrl: sessionWorkspaceMatch.repoUrl ?? null,
+                repoRef: sessionWorkspaceMatch.repoRef ?? null,
+              });
+              return {
+                cwd: isolatedWorkspace.cwd,
+                source: "project_primary" as const,
+                projectId: sessionWorkspaceMatch.projectId,
+                workspaceId: sessionWorkspaceMatch.id,
+                repoUrl: sessionWorkspaceMatch.repoUrl,
+                repoRef: sessionWorkspaceMatch.repoRef,
+                workspaceHints: [
+                  {
+                    workspaceId: sessionWorkspaceMatch.id,
+                    cwd: readNonEmptyString(sessionWorkspaceMatch.cwd),
+                    repoUrl: readNonEmptyString(sessionWorkspaceMatch.repoUrl),
+                    repoRef: readNonEmptyString(sessionWorkspaceMatch.repoRef),
+                  },
+                ],
+                warnings: [
+                  ...isolatedWorkspace.warnings,
+                  `Session cwd "${sessionCwd}" matches a project workspace; redirected to isolated worktree to prevent concurrent overwrites.`,
+                ],
+              };
+            } catch {
+              // If isolation fails, fall through to use session cwd directly
+            }
+          }
+        }
+
         return {
           cwd: sessionCwd,
           source: "task_session" as const,
@@ -805,6 +916,201 @@ export function heartbeatService(db: Db) {
     };
   }
 
+  async function findHealthyRecoveryAgent(agentId: string) {
+    const visited = new Set<string>([agentId]);
+    let currentId = await db
+      .select({ reportsTo: agents.reportsTo })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]?.reportsTo ?? null);
+
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const candidate = await getAgent(currentId);
+      if (!candidate) break;
+      if (RECOVERY_ELIGIBLE_AGENT_STATUSES.has(candidate.status)) {
+        return candidate;
+      }
+      currentId = candidate.reportsTo ?? null;
+    }
+
+    return null;
+  }
+
+  function buildStrandedIssueRecoveryComment(input: {
+    previousAssigneeName: string;
+    recoveryAssigneeName: string;
+    previousStatus: StrandedIssueStatus;
+    nextStatus: StrandedIssueStatus;
+  }) {
+    const lines = [
+      "## Auto-escalated",
+      "",
+      `- Previous assignee: ${input.previousAssigneeName} entered \`error\`.`,
+      `- New assignee: ${input.recoveryAssigneeName}.`,
+    ];
+    if (input.previousStatus !== input.nextStatus) {
+      lines.push("- Status reset to `todo` so the new owner can review and re-checkout the work.");
+    }
+    return lines.join("\n");
+  }
+
+  async function recoverStrandedIssues(input: { companyId: string; assigneeAgentId?: string }) {
+    const conditions = [
+      eq(issues.companyId, input.companyId),
+      eq(linkedAssignee.status, "error"),
+      isNull(issues.hiddenAt),
+      inArray(issues.status, [...STRANDED_ISSUE_STATUSES]),
+    ];
+    if (input?.assigneeAgentId) {
+      conditions.push(eq(issues.assigneeAgentId, input.assigneeAgentId));
+    }
+
+    const strandedIssues = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        title: issues.title,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        identifier: issues.identifier,
+        assigneeName: linkedAssignee.name,
+      })
+      .from(issues)
+      .innerJoin(
+        linkedAssignee,
+        and(
+          eq(issues.assigneeAgentId, linkedAssignee.id),
+          eq(issues.companyId, linkedAssignee.companyId),
+        ),
+      )
+      .where(and(...conditions))
+      .orderBy(asc(issues.updatedAt), asc(issues.createdAt));
+
+    let rerouted = 0;
+    const recoveryAgentByErroredAssignee = new Map<string, typeof agents.$inferSelect | null>();
+
+    for (const issue of strandedIssues) {
+      if (!issue.assigneeAgentId) continue;
+
+      let recoveryAgent = recoveryAgentByErroredAssignee.get(issue.assigneeAgentId);
+      if (recoveryAgent === undefined) {
+        recoveryAgent = await findHealthyRecoveryAgent(issue.assigneeAgentId);
+        recoveryAgentByErroredAssignee.set(issue.assigneeAgentId, recoveryAgent);
+      }
+      if (!recoveryAgent) continue;
+
+      const previousStatus = issue.status as StrandedIssueStatus;
+      const nextStatus: StrandedIssueStatus =
+        previousStatus === "in_progress" ? "todo" : previousStatus;
+      const now = new Date();
+      const patch: Partial<typeof issues.$inferInsert> = {
+        assigneeAgentId: recoveryAgent.id,
+        assigneeUserId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      };
+      if (nextStatus !== issue.status) {
+        patch.status = nextStatus;
+        patch.startedAt = null;
+      }
+      const updated = await db
+        .update(issues)
+        .set(patch)
+        .where(
+          and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, input.companyId),
+            eq(issues.assigneeAgentId, issue.assigneeAgentId),
+            isNull(issues.hiddenAt),
+            inArray(issues.status, [...STRANDED_ISSUE_STATUSES]),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) continue;
+
+      rerouted += 1;
+      const comment = await issueSvc.addComment(
+        updated.id,
+        buildStrandedIssueRecoveryComment({
+          previousAssigneeName: issue.assigneeName,
+          recoveryAssigneeName: recoveryAgent.name,
+          previousStatus,
+          nextStatus,
+        }),
+        {},
+      );
+
+      const previousDetails: Record<string, unknown> = {
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+      };
+      if (nextStatus !== previousStatus) previousDetails.status = previousStatus;
+
+      await logActivity(db, {
+        companyId: updated.companyId,
+        actorType: "system",
+        actorId: "heartbeat_recovery",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: updated.id,
+        details: {
+          identifier: updated.identifier,
+          assigneeAgentId: recoveryAgent.id,
+          assigneeUserId: null,
+          recoveryReason: "assignee_agent_error",
+          recoveryAssigneeAgentId: recoveryAgent.id,
+          ...(nextStatus !== previousStatus ? { status: nextStatus } : {}),
+          _previous: previousDetails,
+        },
+      });
+
+      await logActivity(db, {
+        companyId: updated.companyId,
+        actorType: "system",
+        actorId: "heartbeat_recovery",
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: updated.id,
+        details: {
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+          identifier: updated.identifier,
+          issueTitle: updated.title,
+        },
+      });
+
+      try {
+        await enqueueWakeup(recoveryAgent.id, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: { issueId: updated.id, mutation: "error_recovery" },
+          requestedByActorType: "system",
+          requestedByActorId: "heartbeat_recovery",
+          contextSnapshot: { issueId: updated.id, source: "issue.error_recovery" },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, issueId: updated.id, recoveryAgentId: recoveryAgent.id },
+          "failed to wake reassigned recovery owner",
+        );
+      }
+    }
+
+    return {
+      considered: strandedIssues.length,
+      rerouted,
+      unresolved: strandedIssues.length - rerouted,
+    };
+  }
+
   async function countRunningRunsForAgent(agentId: string) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
@@ -891,6 +1197,13 @@ export function heartbeatService(db: Db) {
           outcome,
         },
       });
+
+      if (updated.status === "error") {
+        await recoverStrandedIssues({
+          companyId: updated.companyId,
+          assigneeAgentId: updated.id,
+        });
+      }
     }
   }
 
@@ -1097,7 +1410,10 @@ export function heartbeatService(db: Db) {
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null },
+      {
+        useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        taskKey,
+      },
     );
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,
@@ -2050,6 +2366,24 @@ export function heartbeatService(db: Db) {
       })
       .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
+    if (issueId && shouldQueueFollowupForCommentWake && sameScopeRunningRun) {
+      await db
+        .update(issues)
+        .set({
+          executionRunId: newRun.id,
+          executionAgentNameKey: normalizeAgentNameKey(agent.name),
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issues.id, issueId),
+            eq(issues.companyId, agent.companyId),
+            eq(issues.executionRunId, sameScopeRunningRun.id),
+          ),
+        );
+    }
+
     publishLiveEvent({
       companyId: newRun.companyId,
       type: "heartbeat.run.queued",
@@ -2202,6 +2536,10 @@ export function heartbeatService(db: Db) {
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
+      const companyIds = [...new Set(allAgents.map((agent) => agent.companyId))];
+      for (const companyId of companyIds) {
+        await recoverStrandedIssues({ companyId });
+      }
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
