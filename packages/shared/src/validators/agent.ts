@@ -78,6 +78,7 @@ export const wakeAgentSchema = z.object({
   reason: z.string().optional().nullable(),
   payload: z.record(z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
+  overrideCooldown: z.boolean().optional(),
 });
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;

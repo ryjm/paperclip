@@ -8,6 +8,20 @@ export interface AgentPermissions {
   canCreateAgents: boolean;
 }
 
+export interface AgentWakeCooldown {
+  kind: "provider_quota_reset";
+  scope: "agent";
+  provider: string;
+  adapterType: string;
+  errorCode: string;
+  message: string;
+  resetAt: string;
+  resetLabel: string | null;
+  timezone: string | null;
+  detectedAt: string;
+  sourceRunId: string | null;
+}
+
 export interface Agent {
   id: string;
   companyId: string;

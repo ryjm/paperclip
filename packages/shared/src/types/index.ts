@@ -2,6 +2,7 @@ export type { Company } from "./company.js";
 export type {
   Agent,
   AgentPermissions,
+  AgentWakeCooldown,
   AgentKeyCreated,
   AgentConfigRevision,
   AdapterEnvironmentCheckLevel,

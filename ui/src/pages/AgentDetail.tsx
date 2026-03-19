@@ -13,6 +13,10 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  formatAgentWakeCooldownDeadline,
+  getActiveAgentWakeCooldown,
+} from "../lib/agent-wake-cooldown";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
 import { getUIAdapter, buildTranscript } from "../adapters";
@@ -653,6 +657,7 @@ export function AgentDetail() {
           runs={heartbeats ?? []}
           companyId={resolvedCompanyId!}
           agentId={agent.id}
+          agent={agent}
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
@@ -1270,6 +1275,7 @@ function RunsTab({
   runs,
   companyId,
   agentId,
+  agent,
   agentRouteId,
   selectedRunId,
   adapterType,
@@ -1277,6 +1283,7 @@ function RunsTab({
   runs: HeartbeatRun[];
   companyId: string;
   agentId: string;
+  agent: Agent;
   agentRouteId: string;
   selectedRunId: string | null;
   adapterType: string;
@@ -1308,7 +1315,13 @@ function RunsTab({
             <ArrowLeft className="h-3.5 w-3.5" />
             Back to runs
           </Link>
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail
+            key={selectedRun.id}
+            run={selectedRun}
+            agent={agent}
+            agentRouteId={agentRouteId}
+            adapterType={adapterType}
+          />
         </div>
       );
     }
@@ -1339,7 +1352,13 @@ function RunsTab({
       {/* Right: run detail — natural height, page scrolls */}
       {selectedRun && (
         <div className="flex-1 min-w-0 pl-4">
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail
+            key={selectedRun.id}
+            run={selectedRun}
+            agent={agent}
+            agentRouteId={agentRouteId}
+            adapterType={adapterType}
+          />
         </div>
       )}
     </div>
@@ -1348,10 +1367,24 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
-function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
+function RunDetail({
+  run,
+  agent,
+  agentRouteId,
+  adapterType,
+}: {
+  run: HeartbeatRun;
+  agent: Agent;
+  agentRouteId: string;
+  adapterType: string;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const metrics = runMetrics(run);
+  const activeWakeCooldown = getActiveAgentWakeCooldown(agent);
+  const cooldownDeadline = activeWakeCooldown
+    ? formatAgentWakeCooldownDeadline(activeWakeCooldown)
+    : null;
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
 
@@ -1415,12 +1448,13 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
     return payload;
   }, [run.contextSnapshot]);
   const retryRun = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (input?: { overrideCooldown?: boolean }) => {
       const result = await agentsApi.wakeup(run.agentId, {
         source: "on_demand",
         triggerDetail: "manual",
         reason: "retry_failed_run",
         payload: retryPayload,
+        overrideCooldown: input?.overrideCooldown === true,
       }, run.companyId);
       if (!("id" in result)) {
         throw new Error("Retry was skipped because the agent is not currently invokable.");
@@ -1528,14 +1562,26 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
                   variant="ghost"
                   size="sm"
                   className="text-xs h-6 px-2"
-                  onClick={() => retryRun.mutate()}
+                  onClick={() =>
+                    retryRun.mutate(activeWakeCooldown ? { overrideCooldown: true } : undefined)
+                  }
                   disabled={retryRun.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {retryRun.isPending ? "Retrying…" : "Retry"}
+                  {retryRun.isPending
+                    ? "Retrying…"
+                    : activeWakeCooldown
+                      ? "Override cooldown"
+                      : "Retry"}
                 </Button>
               )}
             </div>
+            {activeWakeCooldown && (
+              <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-muted-foreground">
+                Capacity cooldown is active until {cooldownDeadline}. Manual retries are
+                suppressed unless you explicitly override the cooldown.
+              </div>
+            )}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}

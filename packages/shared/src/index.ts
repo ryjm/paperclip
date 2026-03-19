@@ -66,6 +66,7 @@ export type {
   Company,
   Agent,
   AgentPermissions,
+  AgentWakeCooldown,
   AgentKeyCreated,
   AgentConfigRevision,
   AdapterEnvironmentCheckLevel,
