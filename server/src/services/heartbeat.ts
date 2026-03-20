@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -23,6 +23,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { ensureTaskScopedProjectWorkspace } from "./project-run-workspace.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -481,7 +482,7 @@ export function heartbeatService(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; taskKey?: string | null },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -494,7 +495,31 @@ export function heartbeatService(db: Db) {
       : null;
     const resolvedProjectId = issueProjectId ?? contextProjectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
-    const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
+
+    // When no project is resolved from issue/context, try to infer from the
+    // agent's configured cwd so idle or comment-triggered heartbeats still
+    // receive an isolated task-scoped workspace instead of the shared checkout.
+    let inferredProjectId = resolvedProjectId;
+    if (!inferredProjectId && useProjectWorkspace) {
+      const agentConfigCwd = readNonEmptyString(parseObject(agent.adapterConfig).cwd);
+      if (agentConfigCwd) {
+        const matchByConfigCwd = await db
+          .select({ projectId: projectWorkspaces.projectId })
+          .from(projectWorkspaces)
+          .where(
+            and(
+              eq(projectWorkspaces.companyId, agent.companyId),
+              eq(projectWorkspaces.cwd, agentConfigCwd),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0]?.projectId ?? null);
+        if (matchByConfigCwd) {
+          inferredProjectId = matchByConfigCwd;
+        }
+      }
+    }
+    const workspaceProjectId = useProjectWorkspace ? inferredProjectId : null;
 
     const projectWorkspaceRows = workspaceProjectId
       ? await db
@@ -518,6 +543,7 @@ export function heartbeatService(db: Db) {
 
     if (projectWorkspaceRows.length > 0) {
       const missingProjectCwds: string[] = [];
+      const isolationWarnings: string[] = [];
       let hasConfiguredProjectCwd = false;
       for (const workspace of projectWorkspaceRows) {
         const projectCwd = readNonEmptyString(workspace.cwd);
@@ -530,53 +556,40 @@ export function heartbeatService(db: Db) {
           .then((stats) => stats.isDirectory())
           .catch(() => false);
         if (projectCwdExists) {
-          const conflictingRun = await db
-            .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId })
-            .from(heartbeatRuns)
-            .where(
-              and(
-                eq(heartbeatRuns.workspaceCwd, projectCwd),
-                eq(heartbeatRuns.status, "running"),
-                ne(heartbeatRuns.agentId, agent.id),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-
-          if (conflictingRun) {
-            const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
-            await fs.mkdir(fallbackCwd, { recursive: true });
+          try {
+            const isolatedWorkspace = await ensureTaskScopedProjectWorkspace({
+              agentId: agent.id,
+              projectId: resolvedProjectId,
+              taskKey: opts?.taskKey ?? null,
+              workspaceId: workspace.id,
+              projectCwd,
+              repoUrl: workspace.repoUrl ?? null,
+              repoRef: workspace.repoRef ?? null,
+            });
             return {
-              cwd: fallbackCwd,
-              source: "agent_home" as const,
+              cwd: isolatedWorkspace.cwd,
+              source: "project_primary" as const,
               projectId: resolvedProjectId,
               workspaceId: workspace.id,
               repoUrl: workspace.repoUrl,
               repoRef: workspace.repoRef,
               workspaceHints,
-              warnings: [
-                `Project workspace "${projectCwd}" is already in use by another agent's active run (${conflictingRun.id}). Using isolated fallback workspace "${fallbackCwd}" to prevent cross-agent contamination.`,
-              ],
+              warnings: isolatedWorkspace.warnings,
             };
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            isolationWarnings.push(
+              `Could not prepare isolated workspace from "${projectCwd}": ${reason}`,
+            );
           }
-
-          return {
-            cwd: projectCwd,
-            source: "project_primary" as const,
-            projectId: resolvedProjectId,
-            workspaceId: workspace.id,
-            repoUrl: workspace.repoUrl,
-            repoRef: workspace.repoRef,
-            workspaceHints,
-            warnings: [],
-          };
+          continue;
         }
         missingProjectCwds.push(projectCwd);
       }
 
       const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
       await fs.mkdir(fallbackCwd, { recursive: true });
-      const warnings: string[] = [];
+      const warnings: string[] = [...isolationWarnings];
       if (missingProjectCwds.length > 0) {
         const firstMissing = missingProjectCwds[0];
         const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
@@ -588,6 +601,10 @@ export function heartbeatService(db: Db) {
       } else if (!hasConfiguredProjectCwd) {
         warnings.push(
           `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
+        );
+      } else if (isolationWarnings.length > 0) {
+        warnings.push(
+          `Project workspace isolation was unavailable. Using fallback workspace "${fallbackCwd}" for this run.`,
         );
       }
       return {
@@ -609,6 +626,55 @@ export function heartbeatService(db: Db) {
         .then((stats) => stats.isDirectory())
         .catch(() => false);
       if (sessionCwdExists) {
+        if (useProjectWorkspace) {
+          const sessionWorkspaceMatch = await db
+            .select()
+            .from(projectWorkspaces)
+            .where(
+              and(
+                eq(projectWorkspaces.companyId, agent.companyId),
+                eq(projectWorkspaces.cwd, sessionCwd),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (sessionWorkspaceMatch) {
+            try {
+              const isolatedWorkspace = await ensureTaskScopedProjectWorkspace({
+                agentId: agent.id,
+                projectId: sessionWorkspaceMatch.projectId,
+                taskKey: opts?.taskKey ?? null,
+                workspaceId: sessionWorkspaceMatch.id,
+                projectCwd: sessionCwd,
+                repoUrl: sessionWorkspaceMatch.repoUrl ?? null,
+                repoRef: sessionWorkspaceMatch.repoRef ?? null,
+              });
+              return {
+                cwd: isolatedWorkspace.cwd,
+                source: "project_primary" as const,
+                projectId: sessionWorkspaceMatch.projectId,
+                workspaceId: sessionWorkspaceMatch.id,
+                repoUrl: sessionWorkspaceMatch.repoUrl,
+                repoRef: sessionWorkspaceMatch.repoRef,
+                workspaceHints: [
+                  {
+                    workspaceId: sessionWorkspaceMatch.id,
+                    cwd: readNonEmptyString(sessionWorkspaceMatch.cwd),
+                    repoUrl: readNonEmptyString(sessionWorkspaceMatch.repoUrl),
+                    repoRef: readNonEmptyString(sessionWorkspaceMatch.repoRef),
+                  },
+                ],
+                warnings: [
+                  ...isolatedWorkspace.warnings,
+                  `Session cwd "${sessionCwd}" matches a project workspace; redirected to isolated worktree to prevent concurrent overwrites.`,
+                ],
+              };
+            } catch {
+              // Fall through to use the saved session cwd if isolation cannot be prepared.
+            }
+          }
+        }
+
         return {
           cwd: sessionCwd,
           source: "task_session" as const,
@@ -1127,7 +1193,10 @@ export function heartbeatService(db: Db) {
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null },
+      {
+        useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        taskKey,
+      },
     );
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,
