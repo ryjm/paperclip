@@ -5,7 +5,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
-import { ensureTaskScopedProjectWorkspace } from "../services/project-run-workspace.js";
+import {
+  cleanupTaskScopedProjectWorkspaces,
+  ensureTaskScopedProjectWorkspace,
+} from "../services/project-run-workspace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -368,6 +371,103 @@ describe("ensureTaskScopedProjectWorkspace", () => {
       // Changes in the worktree do not affect the shared checkout
       await writeFile(path.join(workspace.cwd, "note.txt"), "idle agent change\n", "utf8");
       await expect(readFile(path.join(projectCwd, "note.txt"), "utf8")).resolves.toBe("clean\n");
+    } finally {
+      restoreEnv("PAPERCLIP_HOME", previousHome);
+      restoreEnv("PAPERCLIP_INSTANCE_ID", previousInstance);
+    }
+  });
+
+  it("garbage-collects git worktrees for a closed task across all agent workspace roots", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-task-worktree-gc-"));
+    tempRoots.push(root);
+    const paperclipHome = path.join(root, "paperclip-home");
+    const repoRoot = path.join(root, "repo");
+    const projectCwd = path.join(repoRoot, "packages", "app");
+    const previousHome = rememberEnv("PAPERCLIP_HOME");
+    const previousInstance = rememberEnv("PAPERCLIP_INSTANCE_ID");
+
+    await createCommittedRepo(repoRoot);
+
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "workspace-test";
+
+    try {
+      const agentA = await ensureTaskScopedProjectWorkspace({
+        agentId: "agent-a",
+        projectId: "project-1",
+        taskKey: "issue-closed",
+        workspaceId: "workspace-1",
+        projectCwd,
+        repoUrl: null,
+        repoRef: null,
+      });
+      const agentB = await ensureTaskScopedProjectWorkspace({
+        agentId: "agent-b",
+        projectId: "project-1",
+        taskKey: "issue-closed",
+        workspaceId: "workspace-1",
+        projectCwd,
+        repoUrl: null,
+        repoRef: null,
+      });
+
+      const cleanup = await cleanupTaskScopedProjectWorkspaces({
+        projectId: "project-1",
+        taskKey: "issue-closed",
+        workspaceIds: ["workspace-1"],
+      });
+
+      expect(cleanup.skippedRoots).toEqual([]);
+      expect(cleanup.removedRoots.sort()).toEqual([agentA.rootDir, agentB.rootDir].sort());
+      await expect(readFile(path.join(agentA.cwd, "note.txt"), "utf8")).rejects.toThrow();
+      await expect(readFile(path.join(agentB.cwd, "note.txt"), "utf8")).rejects.toThrow();
+
+      const worktreeList = await execFileAsync("git", ["worktree", "list"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      expect(worktreeList.stdout).not.toContain(path.join(agentA.rootDir, "repo"));
+      expect(worktreeList.stdout).not.toContain(path.join(agentB.rootDir, "repo"));
+    } finally {
+      restoreEnv("PAPERCLIP_HOME", previousHome);
+      restoreEnv("PAPERCLIP_INSTANCE_ID", previousInstance);
+    }
+  });
+
+  it("garbage-collects directory-copy task workspaces for closed non-git tasks", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-task-copy-gc-"));
+    tempRoots.push(root);
+    const paperclipHome = path.join(root, "paperclip-home");
+    const projectCwd = path.join(root, "workspace");
+    const previousHome = rememberEnv("PAPERCLIP_HOME");
+    const previousInstance = rememberEnv("PAPERCLIP_INSTANCE_ID");
+
+    await mkdir(projectCwd, { recursive: true });
+    await writeFile(path.join(projectCwd, "note.txt"), "clean\n", "utf8");
+
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "workspace-test";
+
+    try {
+      const workspace = await ensureTaskScopedProjectWorkspace({
+        agentId: "agent-1",
+        projectId: "project-1",
+        taskKey: "issue-closed",
+        workspaceId: "workspace-1",
+        projectCwd,
+        repoUrl: null,
+        repoRef: null,
+      });
+
+      const cleanup = await cleanupTaskScopedProjectWorkspaces({
+        projectId: "project-1",
+        taskKey: "issue-closed",
+        workspaceIds: ["workspace-1"],
+      });
+
+      expect(cleanup.skippedRoots).toEqual([]);
+      expect(cleanup.removedRoots).toEqual([workspace.rootDir]);
+      await expect(readFile(path.join(workspace.cwd, "note.txt"), "utf8")).rejects.toThrow();
     } finally {
       restoreEnv("PAPERCLIP_HOME", previousHome);
       restoreEnv("PAPERCLIP_INSTANCE_ID", previousInstance);

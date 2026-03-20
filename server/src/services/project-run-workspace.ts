@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import {
+  resolveDefaultAgentWorkspaceDir,
+  resolvePaperclipInstanceRoot,
+} from "../home-paths.js";
 
 const execFileAsync = promisify(execFile);
 const WORKSPACE_METADATA_FILENAME = "paperclip-workspace.json";
@@ -17,6 +20,14 @@ export interface TaskScopedProjectWorkspace {
   mode: ManagedWorkspaceMode;
   rootDir: string;
   warnings: string[];
+}
+
+export interface TaskScopedProjectWorkspaceCleanupResult {
+  removedRoots: string[];
+  skippedRoots: Array<{
+    rootDir: string;
+    reason: string;
+  }>;
 }
 
 function readNonEmptyString(value: string | null | undefined): string | null {
@@ -151,6 +162,76 @@ async function detectInterruptedOperation(repoRoot: string): Promise<"rebase" | 
 
 async function ensureDirectoryAbsent(dir: string) {
   await fs.rm(dir, { recursive: true, force: true });
+}
+
+async function isDirectory(dir: string) {
+  return fs
+    .stat(dir)
+    .then((stats) => stats.isDirectory())
+    .catch(() => false);
+}
+
+async function readWorkspaceMetadata(rootDir: string) {
+  const metadataPath = path.join(rootDir, WORKSPACE_METADATA_FILENAME);
+  const raw = await fs.readFile(metadataPath, "utf8").catch(() => null);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveGitAdminCwd(
+  rootDir: string,
+  metadata: Record<string, unknown> | null,
+) {
+  const configuredRepoRoot =
+    metadata && typeof metadata.sourceRepoRoot === "string"
+      ? readNonEmptyString(metadata.sourceRepoRoot)
+      : null;
+  if (configuredRepoRoot) return configuredRepoRoot;
+
+  const checkoutRoot = path.join(rootDir, "repo");
+  const commonGitDir = await tryRunGit(checkoutRoot, ["rev-parse", "--git-common-dir"]);
+  if (!commonGitDir?.stdout) return null;
+
+  const absoluteCommonGitDir = path.resolve(checkoutRoot, commonGitDir.stdout);
+  return path.dirname(absoluteCommonGitDir);
+}
+
+async function cleanupManagedWorkspaceRoot(rootDir: string) {
+  const metadata = await readWorkspaceMetadata(rootDir);
+  const checkoutRoot = path.join(rootDir, "repo");
+  const checkoutIsGitWorktree = await tryRunGit(checkoutRoot, ["rev-parse", "--show-toplevel"]);
+  const mode = metadata?.mode === "directory_copy"
+    ? "directory_copy"
+    : checkoutIsGitWorktree?.stdout
+      ? "git_worktree"
+      : "directory_copy";
+
+  if (mode === "git_worktree" && await isDirectory(checkoutRoot)) {
+    const gitAdminCwd = await resolveGitAdminCwd(rootDir, metadata);
+    if (gitAdminCwd) {
+      try {
+        await runGit(gitAdminCwd, ["worktree", "remove", "--force", checkoutRoot]);
+      } catch {
+        await ensureDirectoryAbsent(rootDir);
+        await tryRunGit(gitAdminCwd, ["worktree", "prune"]);
+        return;
+      }
+      await tryRunGit(gitAdminCwd, ["worktree", "prune"]);
+    }
+  }
+
+  await ensureDirectoryAbsent(rootDir);
+}
+
+async function listAgentWorkspaceIds() {
+  const workspacesRoot = path.join(resolvePaperclipInstanceRoot(), "workspaces");
+  const entries = await fs.readdir(workspacesRoot, { withFileTypes: true }).catch(() => []);
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 }
 
 async function writeWorkspaceMetadata(
@@ -329,4 +410,42 @@ export async function ensureTaskScopedProjectWorkspace(input: {
     rootDir: managedRoot,
     warnings,
   };
+}
+
+export async function cleanupTaskScopedProjectWorkspaces(input: {
+  projectId: string;
+  taskKey: string;
+  workspaceIds: string[];
+}): Promise<TaskScopedProjectWorkspaceCleanupResult> {
+  const removedRoots: string[] = [];
+  const skippedRoots: Array<{ rootDir: string; reason: string }> = [];
+  const workspaceIds = [...new Set(input.workspaceIds.map((value) => value.trim()).filter(Boolean))];
+  if (workspaceIds.length === 0) {
+    return { removedRoots, skippedRoots };
+  }
+
+  const agentWorkspaceIds = await listAgentWorkspaceIds();
+  for (const agentId of agentWorkspaceIds) {
+    for (const workspaceId of workspaceIds) {
+      const rootDir = buildManagedWorkspaceRoot({
+        agentId,
+        projectId: input.projectId,
+        taskKey: input.taskKey,
+        workspaceId,
+      });
+      if (!await isDirectory(rootDir)) {
+        continue;
+      }
+
+      try {
+        await cleanupManagedWorkspaceRoot(rootDir);
+        removedRoots.push(rootDir);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        skippedRoots.push({ rootDir, reason });
+      }
+    }
+  }
+
+  return { removedRoots, skippedRoots };
 }

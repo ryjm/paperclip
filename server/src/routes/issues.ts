@@ -764,6 +764,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     })();
 
+    if (issue.status === "done" || issue.status === "cancelled") {
+      try {
+        await svc.cleanupClosedTaskArtifacts(issue.id);
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "failed to clean closed issue task artifacts");
+      }
+    }
+
     res.json({ ...issue, comment });
   });
 

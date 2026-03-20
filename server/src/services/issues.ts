@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentTaskSessions,
   assets,
   companies,
   companyMemberships,
@@ -18,6 +19,7 @@ import {
 } from "@paperclipai/db";
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { cleanupTaskScopedProjectWorkspaces } from "./project-run-workspace.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -251,6 +253,17 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 
+type ClosedTaskArtifactCleanupResult = {
+  issueClosed: boolean;
+  skippedDueToActiveRun: boolean;
+  clearedTaskSessionCount: number;
+  removedWorkspaceRoots: string[];
+  skippedWorkspaceRoots: Array<{
+    rootDir: string;
+    reason: string;
+  }>;
+};
+
 async function activeRunMapForIssues(
   dbOrTx: any,
   issueRows: IssueWithLabels[],
@@ -376,6 +389,101 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!run) return true;
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+  }
+
+  async function cleanupClosedTaskArtifacts(issueId: string): Promise<ClosedTaskArtifactCleanupResult> {
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        projectId: issues.projectId,
+        status: issues.status,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!issue || (issue.status !== "done" && issue.status !== "cancelled")) {
+      return {
+        issueClosed: false,
+        skippedDueToActiveRun: false,
+        clearedTaskSessionCount: 0,
+        removedWorkspaceRoots: [],
+        skippedWorkspaceRoots: [],
+      };
+    }
+
+    const activeRun = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
+          issue.executionRunId
+            ? or(
+                eq(heartbeatRuns.id, issue.executionRunId),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              )
+            : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (activeRun) {
+      return {
+        issueClosed: true,
+        skippedDueToActiveRun: true,
+        clearedTaskSessionCount: 0,
+        removedWorkspaceRoots: [],
+        skippedWorkspaceRoots: [],
+      };
+    }
+
+    const taskSessionIds = await db
+      .select({ id: agentTaskSessions.id })
+      .from(agentTaskSessions)
+      .where(
+        and(
+          eq(agentTaskSessions.companyId, issue.companyId),
+          eq(agentTaskSessions.taskKey, issue.id),
+        ),
+      )
+      .then((rows) => rows.map((row) => row.id));
+    if (taskSessionIds.length > 0) {
+      await db
+        .delete(agentTaskSessions)
+        .where(inArray(agentTaskSessions.id, taskSessionIds));
+    }
+
+    const workspaceIds = issue.projectId
+      ? await db
+          .select({ id: projectWorkspaces.id })
+          .from(projectWorkspaces)
+          .where(
+            and(
+              eq(projectWorkspaces.companyId, issue.companyId),
+              eq(projectWorkspaces.projectId, issue.projectId),
+            ),
+          )
+          .then((rows) => rows.map((row) => row.id))
+      : [];
+    const workspaceCleanup = issue.projectId && workspaceIds.length > 0
+      ? await cleanupTaskScopedProjectWorkspaces({
+          projectId: issue.projectId,
+          taskKey: issue.id,
+          workspaceIds,
+        })
+      : { removedRoots: [], skippedRoots: [] };
+
+    return {
+      issueClosed: true,
+      skippedDueToActiveRun: false,
+      clearedTaskSessionCount: taskSessionIds.length,
+      removedWorkspaceRoots: workspaceCleanup.removedRoots,
+      skippedWorkspaceRoots: workspaceCleanup.skippedRoots,
+    };
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -733,6 +841,8 @@ export function issueService(db: Db) {
         return enriched;
       });
     },
+
+    cleanupClosedTaskArtifacts,
 
     remove: (id: string) =>
       db.transaction(async (tx) => {

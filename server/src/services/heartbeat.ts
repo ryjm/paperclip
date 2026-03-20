@@ -1707,6 +1707,13 @@ export function heartbeatService(db: Db) {
             });
           }
         }
+        if (taskKey) {
+          try {
+            await issueSvc.cleanupClosedTaskArtifacts(taskKey);
+          } catch (err) {
+            logger.warn({ err, runId: finalizedRun.id, taskKey }, "failed to clean closed issue task artifacts after run completion");
+          }
+        }
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
@@ -1767,6 +1774,13 @@ export function heartbeatService(db: Db) {
             lastError: message,
           });
         }
+        if (taskKey) {
+          try {
+            await issueSvc.cleanupClosedTaskArtifacts(taskKey);
+          } catch (err) {
+            logger.warn({ err, runId: failedRun.id, taskKey }, "failed to clean closed issue task artifacts after failed run");
+          }
+        }
       }
 
       await finalizeAgentStatus(agent.id, "failed");
@@ -1785,6 +1799,7 @@ export function heartbeatService(db: Db) {
         .select({
           id: issues.id,
           companyId: issues.companyId,
+          status: issues.status,
         })
         .from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
@@ -1801,6 +1816,25 @@ export function heartbeatService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
+
+      if (issue.status === "done" || issue.status === "cancelled") {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "skipped",
+            finishedAt: new Date(),
+            error: `Deferred wake dropped because issue is ${issue.status}`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+        return null;
+      }
 
       while (true) {
         const deferred = await tx

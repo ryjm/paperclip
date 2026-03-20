@@ -1,16 +1,62 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import detectPort from "detect-port";
 import EmbeddedPostgres from "embedded-postgres";
-import { applyPendingMigrations, companies, createDb, ensurePostgresDatabase } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import {
+  agentTaskSessions,
+  agents,
+  applyPendingMigrations,
+  companies,
+  createDb,
+  ensurePostgresDatabase,
+  heartbeatRuns,
+  issues,
+  projects,
+  projectWorkspaces,
+} from "@paperclipai/db";
 import { createApp } from "../app.js";
 import { issueService } from "../services/issues.js";
+import { ensureTaskScopedProjectWorkspace } from "../services/project-run-workspace.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
+
+const execFileAsync = promisify(execFile);
+
+async function runGit(cwd: string, args: string[]) {
+  await execFileAsync("git", args, { cwd, encoding: "utf8" });
+}
+
+async function createCommittedRepo(root: string) {
+  await mkdir(root, { recursive: true });
+  await runGit(root, ["init"]);
+  await runGit(root, ["config", "user.name", "Paperclip Test"]);
+  await runGit(root, ["config", "user.email", "paperclip@example.com"]);
+  await runGit(root, ["config", "commit.gpgsign", "false"]);
+  await runGit(root, ["config", "tag.gpgsign", "false"]);
+  await mkdir(join(root, "packages", "app"), { recursive: true });
+  await writeFile(join(root, "packages", "app", "note.txt"), "clean\n", "utf8");
+  await runGit(root, ["add", "."]);
+  await runGit(root, ["commit", "-m", "initial"]);
+}
+
+function rememberEnv(key: string) {
+  return Object.prototype.hasOwnProperty.call(process.env, key) ? process.env[key] ?? null : undefined;
+}
+
+function restoreEnv(key: string, previous: string | null | undefined) {
+  if (previous === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = previous ?? "";
+}
 
 describe("issue done transition route", () => {
   let databaseDir = "";
@@ -160,5 +206,196 @@ describe("issue done transition route", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("done");
+  });
+
+  it("cleans task-scoped workspaces and task sessions when a closed issue has no active run", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "paperclip-closed-issue-gc-"));
+    const repoRoot = join(tempRoot, "repo");
+    const projectCwd = join(repoRoot, "packages", "app");
+    const paperclipHome = join(tempRoot, "paperclip-home");
+    const previousHome = rememberEnv("PAPERCLIP_HOME");
+    const previousInstance = rememberEnv("PAPERCLIP_INSTANCE_ID");
+
+    await createCommittedRepo(repoRoot);
+
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "issue-done-route-test";
+
+    try {
+      const agentId = randomUUID();
+      const projectId = randomUUID();
+      const projectWorkspaceId = randomUUID();
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Workspace Cleanup Agent",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Workspace Cleanup Project",
+        status: "in_progress",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "repo",
+        cwd: projectCwd,
+        isPrimary: true,
+      });
+
+      const issue = await issueService(db).create(companyId, {
+        title: `Workspace cleanup issue ${randomUUID()}`,
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+        projectId,
+      });
+      const workspace = await ensureTaskScopedProjectWorkspace({
+        agentId,
+        projectId,
+        taskKey: issue.id,
+        workspaceId: projectWorkspaceId,
+        projectCwd,
+        repoUrl: null,
+        repoRef: null,
+      });
+
+      await db.insert(agentTaskSessions).values({
+        companyId,
+        agentId,
+        adapterType: "codex_local",
+        taskKey: issue.id,
+        sessionParamsJson: { cwd: workspace.cwd },
+        sessionDisplayId: "session-1",
+      });
+
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({ status: "done" });
+
+      expect(res.status).toBe(200);
+      await expect(readFile(join(workspace.cwd, "note.txt"), "utf8")).rejects.toThrow();
+      const remainingSessions = await db
+        .select({ id: agentTaskSessions.id })
+        .from(agentTaskSessions)
+        .where(eq(agentTaskSessions.taskKey, issue.id));
+      expect(remainingSessions).toEqual([]);
+    } finally {
+      restoreEnv("PAPERCLIP_HOME", previousHome);
+      restoreEnv("PAPERCLIP_INSTANCE_ID", previousInstance);
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("skips closed-issue workspace cleanup while an execution run is still active", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "paperclip-closed-issue-active-run-"));
+    const repoRoot = join(tempRoot, "repo");
+    const projectCwd = join(repoRoot, "packages", "app");
+    const paperclipHome = join(tempRoot, "paperclip-home");
+    const previousHome = rememberEnv("PAPERCLIP_HOME");
+    const previousInstance = rememberEnv("PAPERCLIP_INSTANCE_ID");
+
+    await createCommittedRepo(repoRoot);
+
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "issue-done-route-test";
+
+    try {
+      const agentId = randomUUID();
+      const projectId = randomUUID();
+      const projectWorkspaceId = randomUUID();
+      const runId = randomUUID();
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Workspace Cleanup Agent",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Workspace Cleanup Project",
+        status: "in_progress",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "repo",
+        cwd: projectCwd,
+        isPrimary: true,
+      });
+
+      const issue = await issueService(db).create(companyId, {
+        title: `Workspace cleanup issue ${randomUUID()}`,
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agentId,
+        projectId,
+      });
+      const workspace = await ensureTaskScopedProjectWorkspace({
+        agentId,
+        projectId,
+        taskKey: issue.id,
+        workspaceId: projectWorkspaceId,
+        projectCwd,
+        repoUrl: null,
+        repoRef: null,
+      });
+
+      await db.insert(agentTaskSessions).values({
+        companyId,
+        agentId,
+        adapterType: "codex_local",
+        taskKey: issue.id,
+        sessionParamsJson: { cwd: workspace.cwd },
+        sessionDisplayId: "session-1",
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: { issueId: issue.id, taskKey: issue.id },
+      });
+      await db
+        .update(issues)
+        .set({
+          checkoutRunId: runId,
+          executionRunId: runId,
+          executionLockedAt: new Date(),
+        })
+        .where(eq(issues.id, issue.id));
+
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({ status: "done" });
+
+      expect(res.status).toBe(200);
+      await expect(readFile(join(workspace.cwd, "note.txt"), "utf8")).resolves.toBe("clean\n");
+      const remainingSessions = await db
+        .select({ id: agentTaskSessions.id })
+        .from(agentTaskSessions)
+        .where(eq(agentTaskSessions.taskKey, issue.id));
+      expect(remainingSessions).toHaveLength(1);
+    } finally {
+      restoreEnv("PAPERCLIP_HOME", previousHome);
+      restoreEnv("PAPERCLIP_INSTANCE_ID", previousInstance);
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 });
