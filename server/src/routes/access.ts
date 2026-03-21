@@ -53,6 +53,7 @@ const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const INVITE_TOKEN_SUFFIX_LENGTH = 8;
 const INVITE_TOKEN_MAX_RETRIES = 5;
 const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
+type CompanyPermissionKey = (typeof PERMISSION_KEYS)[number];
 
 function createInviteToken() {
   const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
@@ -1568,28 +1569,41 @@ export function accessRoutes(
   async function assertCompanyPermission(
     req: Request,
     companyId: string,
-    permissionKey: any
+    permissionKey: CompanyPermissionKey
+  ) {
+    return assertAnyCompanyPermission(req, companyId, [permissionKey]);
+  }
+
+  async function assertAnyCompanyPermission(
+    req: Request,
+    companyId: string,
+    permissionKeys: readonly CompanyPermissionKey[]
   ) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden();
-      const allowed = await access.hasPermission(
-        companyId,
-        "agent",
-        req.actor.agentId,
-        permissionKey
-      );
-      if (!allowed) throw forbidden("Permission denied");
-      return;
+      for (const permissionKey of permissionKeys) {
+        const allowed = await access.hasPermission(
+          companyId,
+          "agent",
+          req.actor.agentId,
+          permissionKey
+        );
+        if (allowed) return;
+      }
+      throw forbidden("Permission denied");
     }
     if (req.actor.type !== "board") throw unauthorized();
     if (isLocalImplicit(req)) return;
-    const allowed = await access.canUser(
-      companyId,
-      req.actor.userId,
-      permissionKey
-    );
-    if (!allowed) throw forbidden("Permission denied");
+    for (const permissionKey of permissionKeys) {
+      const allowed = await access.canUser(
+        companyId,
+        req.actor.userId,
+        permissionKey
+      );
+      if (allowed) return;
+    }
+    throw forbidden("Permission denied");
   }
 
   router.get("/skills/index", (_req, res) => {
@@ -2548,7 +2562,10 @@ export function accessRoutes(
 
   router.get("/companies/:companyId/members", async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    await assertAnyCompanyPermission(req, companyId, [
+      "users:read_directory",
+      "users:manage_permissions"
+    ]);
     const members = await access.listMembers(companyId);
     res.json(members);
   });

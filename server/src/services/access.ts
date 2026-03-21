@@ -1,17 +1,31 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  authUsers,
   companyMemberships,
   instanceUserRoles,
   principalPermissionGrants,
 } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type {
+  CompanyMember,
+  MembershipStatus,
+  PermissionKey,
+  PrincipalType,
+} from "@paperclipai/shared";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
 };
+
+function isPrincipalType(value: string): value is PrincipalType {
+  return value === "user" || value === "agent";
+}
+
+function isMembershipStatus(value: string): value is MembershipStatus {
+  return value === "pending" || value === "active" || value === "suspended";
+}
 
 export function accessService(db: Db) {
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
@@ -75,12 +89,35 @@ export function accessService(db: Db) {
     return hasPermission(companyId, "user", userId, permissionKey);
   }
 
-  async function listMembers(companyId: string) {
-    return db
-      .select()
+  async function listMembers(companyId: string): Promise<CompanyMember[]> {
+    const rows = await db
+      .select({
+        membership: companyMemberships,
+        userId: authUsers.id,
+        userName: authUsers.name,
+        userEmail: authUsers.email,
+      })
       .from(companyMemberships)
+      .leftJoin(
+        authUsers,
+        and(eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, authUsers.id)),
+      )
       .where(eq(companyMemberships.companyId, companyId))
       .orderBy(sql`${companyMemberships.createdAt} desc`);
+
+    return rows.map(({ membership, userId, userName, userEmail }) => ({
+      ...membership,
+      principalType: isPrincipalType(membership.principalType) ? membership.principalType : "user",
+      status: isMembershipStatus(membership.status) ? membership.status : "active",
+      user:
+        userId && userName && userEmail
+          ? {
+              id: userId,
+              name: userName,
+              email: userEmail,
+            }
+          : null,
+    }));
   }
 
   async function setMemberPermissions(

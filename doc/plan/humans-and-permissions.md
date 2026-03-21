@@ -190,10 +190,11 @@ Core grants:
 
 1. `agents:create`
 2. `users:invite`
-3. `users:manage_permissions`
-4. `tasks:assign`
-5. `tasks:assign_scope` (org-constrained delegation)
-6. `joins:approve` (approve/reject human and agent join requests)
+3. `users:read_directory`
+4. `users:manage_permissions`
+5. `tasks:assign`
+6. `tasks:assign_scope` (org-constrained delegation)
+7. `joins:approve` (approve/reject human and agent join requests)
 
 Additional behavioral rules:
 

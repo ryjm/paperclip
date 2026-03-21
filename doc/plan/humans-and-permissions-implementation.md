@@ -299,6 +299,7 @@ All under `/api`.
 
 1. `GET /api/companies/:companyId/members`
 - returns both principal types
+- requires `users:read_directory` or `users:manage_permissions`
 
 2. `PATCH /api/companies/:companyId/members/:memberId/permissions`
 - upsert/remove grants

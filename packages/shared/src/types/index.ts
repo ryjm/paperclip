@@ -47,6 +47,8 @@ export type { ActivityEvent } from "./activity.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
 export type {
   CompanyMembership,
+  CompanyMemberUser,
+  CompanyMember,
   PrincipalPermissionGrant,
   Invite,
   JoinRequest,
