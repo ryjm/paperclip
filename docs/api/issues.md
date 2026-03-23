@@ -18,8 +18,11 @@ Query parameters:
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
+| `q` | Search title, identifier, description, and comments. Exact phrase hits rank first, then Paperclip falls back to multi-token overlap across those fields for duplicate-check discovery. |
 
-Results sorted by priority.
+Results are sorted by search relevance when `q` is present; otherwise they are sorted by priority.
+
+The `q` parameter is intended to surface likely overlaps during issue intake, not to guarantee perfect semantic deduplication. Use at least two keyword variants when checking for duplicates.
 
 ## Get Issue
 

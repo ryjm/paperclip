@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -33,6 +33,8 @@ import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+const SEARCH_STOP_WORDS = new Set(["a", "an", "and", "for", "in", "of", "on", "or", "the", "to", "with"]);
+const MAX_SEARCH_TOKENS = 8;
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -109,6 +111,38 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancell
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function tokenizeIssueSearch(value: string): string[] {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  if (!normalized) return [];
+
+  const tokens = new Set<string>();
+  for (const token of normalized.split(/\s+/)) {
+    const isNumeric = /\d/.test(token);
+    if (!isNumeric && (token.length < 2 || SEARCH_STOP_WORDS.has(token))) {
+      continue;
+    }
+    tokens.add(token);
+    if (tokens.size >= MAX_SEARCH_TOKENS) break;
+  }
+  return [...tokens];
+}
+
+function minSearchTokenMatches(tokenCount: number): number {
+  if (tokenCount <= 1) return tokenCount;
+  return Math.min(2, tokenCount);
+}
+
+function sumSqlFragments(fragments: SQL<number>[]): SQL<number> {
+  if (fragments.length === 0) return sql<number>`0`;
+  return fragments.slice(1).reduce(
+    (total, fragment) => sql<number>`${total} + ${fragment}`,
+    fragments[0]!,
+  );
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
@@ -484,6 +518,7 @@ export function issueService(db: Db) {
       const contextUserId = unreadForUserId ?? touchedByUserId;
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
+      const searchTokens = hasSearch ? tokenizeIssueSearch(rawSearch) : [];
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
       const startsWithPattern = `${escapedSearch}%`;
       const containsPattern = `%${escapedSearch}%`;
@@ -501,6 +536,49 @@ export function issueService(db: Db) {
             AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
         )
       `;
+      const tokenClauses = searchTokens.map((token) => {
+        const tokenPattern = `%${escapeLikePattern(token)}%`;
+        const titleMatch = sql<boolean>`${issues.title} ILIKE ${tokenPattern} ESCAPE '\\'`;
+        const identifierMatch = sql<boolean>`${issues.identifier} ILIKE ${tokenPattern} ESCAPE '\\'`;
+        const descriptionMatch = sql<boolean>`${issues.description} ILIKE ${tokenPattern} ESCAPE '\\'`;
+        const commentMatch = sql<boolean>`
+          EXISTS (
+            SELECT 1
+            FROM ${issueComments}
+            WHERE ${issueComments.issueId} = ${issues.id}
+              AND ${issueComments.companyId} = ${companyId}
+              AND ${issueComments.body} ILIKE ${tokenPattern} ESCAPE '\\'
+          )
+        `;
+        const anyFieldMatch = sql<boolean>`
+          (${titleMatch} OR ${identifierMatch} OR ${descriptionMatch} OR ${commentMatch})
+        `;
+        return {
+          titleMatch,
+          identifierMatch,
+          descriptionMatch,
+          commentMatch,
+          anyFieldMatch,
+        };
+      });
+      const tokenTitleMatchCount = sumSqlFragments(
+        tokenClauses.map((clause) => sql<number>`CASE WHEN ${clause.titleMatch} THEN 1 ELSE 0 END`),
+      );
+      const tokenIdentifierMatchCount = sumSqlFragments(
+        tokenClauses.map((clause) => sql<number>`CASE WHEN ${clause.identifierMatch} THEN 1 ELSE 0 END`),
+      );
+      const tokenDescriptionMatchCount = sumSqlFragments(
+        tokenClauses.map((clause) => sql<number>`CASE WHEN ${clause.descriptionMatch} THEN 1 ELSE 0 END`),
+      );
+      const tokenCommentMatchCount = sumSqlFragments(
+        tokenClauses.map((clause) => sql<number>`CASE WHEN ${clause.commentMatch} THEN 1 ELSE 0 END`),
+      );
+      const tokenMatchCount = sumSqlFragments(
+        tokenClauses.map((clause) => sql<number>`CASE WHEN ${clause.anyFieldMatch} THEN 1 ELSE 0 END`),
+      );
+      const tokenCoverageMatch = searchTokens.length > 0
+        ? sql<boolean>`${tokenMatchCount} >= ${minSearchTokenMatches(searchTokens.length)}`
+        : sql<boolean>`false`;
       if (filters?.status) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
@@ -536,6 +614,7 @@ export function issueService(db: Db) {
             identifierContainsMatch,
             descriptionContainsMatch,
             commentContainsMatch,
+            tokenCoverageMatch,
           )!,
         );
       }
@@ -553,14 +632,30 @@ export function issueService(db: Db) {
           WHEN ${identifierContainsMatch} THEN 3
           WHEN ${descriptionContainsMatch} THEN 4
           WHEN ${commentContainsMatch} THEN 5
-          ELSE 6
+          WHEN ${tokenTitleMatchCount} > 0 THEN 6
+          WHEN ${tokenIdentifierMatchCount} > 0 THEN 7
+          WHEN ${tokenDescriptionMatchCount} > 0 THEN 8
+          WHEN ${tokenCommentMatchCount} > 0 THEN 9
+          ELSE 10
         END
       `;
+      const orderByClauses = hasSearch
+        ? [
+          asc(searchOrder),
+          desc(tokenMatchCount),
+          desc(tokenTitleMatchCount),
+          desc(tokenIdentifierMatchCount),
+          desc(tokenDescriptionMatchCount),
+          desc(tokenCommentMatchCount),
+          asc(priorityOrder),
+          desc(issues.updatedAt),
+        ]
+        : [asc(priorityOrder), desc(issues.updatedAt)];
       const rows = await db
         .select()
         .from(issues)
         .where(and(...conditions))
-        .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
+        .orderBy(...orderByClauses);
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);

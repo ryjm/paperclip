@@ -58,6 +58,7 @@ If there is no assigned `todo` / `in_progress` / `blocked` work, no valid mentio
 - Discovery is read-only. Do not edit the repo, implement fixes, mutate external systems, or quietly turn the heartbeat into unassigned feature work.
 - Audit one slice only per heartbeat. Keep the scope narrow enough that another agent or the board can triage the result quickly.
 - Before filing anything new, search for duplicates with `GET /api/companies/{companyId}/issues?q=` using at least two keyword variants. Inspect matching open issues/comments and record the duplicate-check result in the candidate body.
+- `q=` is overlap-oriented, not perfect semantic dedupe: it ranks exact phrase hits first, then falls back to multi-token matches across title, identifier, description, and comments. Use a couple of materially different phrasings when the first query is too literal.
 - Use this candidate issue template:
 
 ```md
