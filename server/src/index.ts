@@ -28,6 +28,7 @@ import { heartbeatService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { getRuntimeProvenance } from "./runtime-provenance.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -478,6 +479,13 @@ const runtimeApiHost =
 process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
 process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
 process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+logger.info(
+  {
+    apiUrl: process.env.PAPERCLIP_API_URL,
+    runtimeProvenance: getRuntimeProvenance(),
+  },
+  "Paperclip runtime provenance",
+);
 
 setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,

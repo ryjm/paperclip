@@ -116,18 +116,22 @@ When a local agent run has no resolved project/session workspace, Paperclip fall
 
 This path honors `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` in non-default setups.
 
+When a project workspace has a local `cwd`, Paperclip now materializes a task-scoped workspace under that same agent home instead of pointing multiple runs at the shared source checkout. Git-backed project folders use `git worktree` when available; non-git folders fall back to an isolated directory copy.
+
 ## Quick Health Checks
 
 In another terminal:
 
 ```sh
-curl http://localhost:3100/api/health
+curl http://localhost:3100/api/health | jq
 curl http://localhost:3100/api/companies
 ```
 
 Expected:
 
-- `/api/health` returns `{"status":"ok"}`
+- `/api/health` returns `status: "ok"` plus runtime provenance, including `runtime.gitCommitSha`
+- in local dev, `runtime.cwd` / `runtime.repoRoot` point at the checkout you intended to start
+- if `runtime.repoRoot` points at an unexpected checkout (for example `/tmp/paperclip-rebased-*`), stop that process and rerun `pnpm dev` from the repo you want to serve, then re-run `/api/health` to confirm the new checkout/commit
 - `/api/companies` returns a JSON array
 
 ## Reset Local Dev Database

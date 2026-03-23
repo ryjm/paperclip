@@ -65,12 +65,14 @@ For full setup and troubleshooting, see [Tailscale Private Access](/deploy/tails
 ## Health Checks
 
 ```sh
-curl http://localhost:3100/api/health
-# -> {"status":"ok"}
+curl http://localhost:3100/api/health | jq
+# -> status: "ok" plus runtime provenance for the running checkout
 
 curl http://localhost:3100/api/companies
 # -> []
 ```
+
+In local dev, verify that `runtime.cwd` / `runtime.repoRoot` point at the checkout you intended to serve. If `/api/health` reports an unexpected checkout (for example `/tmp/paperclip-rebased-*`), stop that process and rerun `pnpm dev` from the repo you actually want to expose, then re-check `/api/health`.
 
 ## Reset Dev Data
 

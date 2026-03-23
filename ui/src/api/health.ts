@@ -1,9 +1,21 @@
+export type HealthRuntime = {
+  startedAt?: string;
+  packageVersion?: string | null;
+  gitBranch?: string | null;
+  gitCommitSha?: string | null;
+  gitCommitShortSha?: string | null;
+  checkoutKind?: "repo_checkout" | "tmp_checkout" | "tmp_rebased" | "no_git";
+  cwd?: string;
+  repoRoot?: string | null;
+};
+
 export type HealthStatus = {
   status: "ok";
   deploymentMode?: "local_trusted" | "authenticated";
   deploymentExposure?: "private" | "public";
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
+  runtime?: HealthRuntime;
   features?: {
     companyDeletionEnabled?: boolean;
   };

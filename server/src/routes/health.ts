@@ -3,6 +3,10 @@ import type { Db } from "@paperclipai/db";
 import { count, sql } from "drizzle-orm";
 import { instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import {
+  getHealthRuntimeProvenance,
+  type RuntimeProvenance,
+} from "../runtime-provenance.js";
 
 export function healthRoutes(
   db?: Db,
@@ -11,6 +15,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    runtimeProvenance?: RuntimeProvenance;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -21,8 +26,13 @@ export function healthRoutes(
   const router = Router();
 
   router.get("/", async (_req, res) => {
+    const runtime = getHealthRuntimeProvenance(
+      opts.deploymentMode,
+      opts.runtimeProvenance,
+    );
+
     if (!db) {
-      res.json({ status: "ok" });
+      res.json({ status: "ok", runtime });
       return;
     }
 
@@ -42,6 +52,7 @@ export function healthRoutes(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       bootstrapStatus,
+      runtime,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
