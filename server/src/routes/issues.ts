@@ -514,11 +514,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
-    const issue = await svc.create(companyId, {
+    const result = await svc.create(companyId, {
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+    const issue = result.issue;
 
     await logActivity(db, {
       companyId,
@@ -526,7 +527,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
-      action: "issue.created",
+      action: result.created ? "issue.created" : "issue.reused",
       entityType: "issue",
       entityId: issue.id,
       details: { title: issue.title, identifier: issue.identifier },
@@ -546,7 +547,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue create"));
     }
 
-    res.status(201).json(issue);
+    res.status(result.created ? 201 : 200).json(issue);
   });
 
   router.patch("/issues/:id", validate(updateIssueSchema), async (req, res) => {

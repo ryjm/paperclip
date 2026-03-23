@@ -20,6 +20,7 @@ import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const REUSABLE_OPEN_CHILD_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -81,6 +82,10 @@ type IssueUserContextInput = {
   assigneeUserId: string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
+};
+type IssueCreateResult = {
+  issue: IssueWithLabels;
+  created: boolean;
 };
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
@@ -297,6 +302,32 @@ function withActiveRuns(
 }
 
 export function issueService(db: Db) {
+  async function findReusableOpenChildIssue(
+    tx: any,
+    companyId: string,
+    data: Omit<typeof issues.$inferInsert, "companyId">,
+  ) {
+    if (!data.createdByAgentId || !data.parentId) return null;
+
+    return tx
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.parentId, data.parentId),
+          eq(issues.title, data.title),
+          data.goalId == null ? isNull(issues.goalId) : eq(issues.goalId, data.goalId),
+          data.projectId == null ? isNull(issues.projectId) : eq(issues.projectId, data.projectId),
+          inArray(issues.status, REUSABLE_OPEN_CHILD_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows: IssueRow[]) => rows[0] ?? null);
+  }
+
   async function assertAssignableAgent(companyId: string, agentId: string) {
     const assignee = await db
       .select({
@@ -620,7 +651,7 @@ export function issueService(db: Db) {
     create: async (
       companyId: string,
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
-    ) => {
+    ): Promise<IssueCreateResult> => {
       const { labelIds: inputLabelIds, ...issueData } = data;
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -635,6 +666,18 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        if (issueData.parentId) {
+          await tx.execute(
+            sql`select id from issues where id = ${issueData.parentId} and company_id = ${companyId} for update`,
+          );
+        }
+
+        const reusableIssue = await findReusableOpenChildIssue(tx, companyId, issueData);
+        if (reusableIssue) {
+          const [enriched] = await withIssueLabels(tx, [reusableIssue]);
+          return { issue: enriched, created: false };
+        }
+
         const [company] = await tx
           .update(companies)
           .set({ issueCounter: sql`${companies.issueCounter} + 1` })
@@ -660,7 +703,7 @@ export function issueService(db: Db) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
-        return enriched;
+        return { issue: enriched, created: true };
       });
     },
 

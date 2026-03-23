@@ -81,12 +81,13 @@ describe("issue done transition route", () => {
   }, 120000);
 
   async function createCodeIssue() {
-    return issueService(db).create(companyId, {
+    const result = await issueService(db).create(companyId, {
       title: `Code issue ${randomUUID()}`,
       status: "todo",
       priority: "high",
       labelIds: [codeLabelId],
     });
+    return result.issue;
   }
 
   it("rejects done transitions for code issues without GitHub evidence", async () => {
