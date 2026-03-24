@@ -6,11 +6,16 @@ import { execute as executeClaude } from "@paperclipai/adapter-claude-local/serv
 import { execute as executeCodex } from "@paperclipai/adapter-codex-local/server";
 import { execute as executeCursor } from "@paperclipai/adapter-cursor-local/server";
 import { execute as executeOpenCode } from "@paperclipai/adapter-opencode-local/server";
+import { execute as executeGemini } from "../../../packages/adapters/gemini-local/src/server/index.ts";
+import { execute as executePi } from "../../../packages/adapters/pi-local/src/server/index.ts";
 
 type CapturePayload = {
   argv: string[];
+  cwd: string;
   env: {
     AGENT_HOME?: string;
+    PAPERCLIP_WORKSPACE_CWD?: string;
+    PAPERCLIP_WORKSPACE_SOURCE?: string;
   };
 };
 
@@ -34,7 +39,12 @@ const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify({
     argv: process.argv.slice(2),
-    env: { AGENT_HOME: process.env.AGENT_HOME },
+    cwd: process.cwd(),
+    env: {
+      AGENT_HOME: process.env.AGENT_HOME,
+      PAPERCLIP_WORKSPACE_CWD: process.env.PAPERCLIP_WORKSPACE_CWD,
+      PAPERCLIP_WORKSPACE_SOURCE: process.env.PAPERCLIP_WORKSPACE_SOURCE,
+    },
   }), "utf8");
 }
 fs.readFileSync(0, "utf8");
@@ -60,7 +70,12 @@ const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify({
     argv: process.argv.slice(2),
-    env: { AGENT_HOME: process.env.AGENT_HOME },
+    cwd: process.cwd(),
+    env: {
+      AGENT_HOME: process.env.AGENT_HOME,
+      PAPERCLIP_WORKSPACE_CWD: process.env.PAPERCLIP_WORKSPACE_CWD,
+      PAPERCLIP_WORKSPACE_SOURCE: process.env.PAPERCLIP_WORKSPACE_SOURCE,
+    },
   }), "utf8");
 }
 fs.readFileSync(0, "utf8");
@@ -100,7 +115,12 @@ const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify({
     argv: process.argv.slice(2),
-    env: { AGENT_HOME: process.env.AGENT_HOME },
+    cwd: process.cwd(),
+    env: {
+      AGENT_HOME: process.env.AGENT_HOME,
+      PAPERCLIP_WORKSPACE_CWD: process.env.PAPERCLIP_WORKSPACE_CWD,
+      PAPERCLIP_WORKSPACE_SOURCE: process.env.PAPERCLIP_WORKSPACE_SOURCE,
+    },
   }), "utf8");
 }
 fs.readFileSync(0, "utf8");
@@ -139,7 +159,12 @@ if (args[0] === "run") {
   if (capturePath) {
     fs.writeFileSync(capturePath, JSON.stringify({
       argv: args,
-      env: { AGENT_HOME: process.env.AGENT_HOME },
+      cwd: process.cwd(),
+      env: {
+        AGENT_HOME: process.env.AGENT_HOME,
+        PAPERCLIP_WORKSPACE_CWD: process.env.PAPERCLIP_WORKSPACE_CWD,
+        PAPERCLIP_WORKSPACE_SOURCE: process.env.PAPERCLIP_WORKSPACE_SOURCE,
+      },
     }), "utf8");
   }
   fs.readFileSync(0, "utf8");
@@ -161,12 +186,91 @@ process.exit(1);
   );
 }
 
-async function expectAgentHomeInjected(input: {
+async function writeFakeGeminiCommand(commandPath: string): Promise<void> {
+  await writeExecutable(
+    commandPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify({
+    argv: process.argv.slice(2),
+    cwd: process.cwd(),
+    env: {
+      AGENT_HOME: process.env.AGENT_HOME,
+      PAPERCLIP_WORKSPACE_CWD: process.env.PAPERCLIP_WORKSPACE_CWD,
+      PAPERCLIP_WORKSPACE_SOURCE: process.env.PAPERCLIP_WORKSPACE_SOURCE,
+    },
+  }), "utf8");
+}
+console.log(JSON.stringify({
+  type: "system",
+  subtype: "init",
+  session_id: "gemini-session-1",
+  model: "gemini-2.5-pro",
+}));
+console.log(JSON.stringify({
+  type: "assistant",
+  message: { content: [{ type: "output_text", text: "gemini ok" }] },
+}));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  session_id: "gemini-session-1",
+  result: "gemini ok",
+}));
+`,
+  );
+}
+
+async function writeFakePiCommand(commandPath: string): Promise<void> {
+  await writeExecutable(
+    commandPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("--list-models")) {
+  console.log("provider  model");
+  console.log("openai    gpt-4.1-mini");
+  process.exit(0);
+}
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify({
+    argv: args,
+    cwd: process.cwd(),
+    env: {
+      AGENT_HOME: process.env.AGENT_HOME,
+      PAPERCLIP_WORKSPACE_CWD: process.env.PAPERCLIP_WORKSPACE_CWD,
+      PAPERCLIP_WORKSPACE_SOURCE: process.env.PAPERCLIP_WORKSPACE_SOURCE,
+    },
+  }), "utf8");
+}
+console.log(JSON.stringify({ type: "session", version: 3, id: "session-1", timestamp: new Date().toISOString(), cwd: process.cwd() }));
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "turn_start" }));
+console.log(JSON.stringify({
+  type: "turn_end",
+  message: {
+    role: "assistant",
+    content: [{ type: "text", text: "pi ok" }],
+    usage: { input: 1, output: 1, cacheRead: 0, cost: { total: 0 } }
+  },
+  toolResults: []
+}));
+`,
+  );
+}
+
+async function expectAgentHomeWorkspaceUsed(input: {
   execute: TestExecute;
+  adapterType: string;
   commandPath: string;
-  cwd: string;
+  configuredCwd: string;
+  workspaceCwd: string;
   instructionsFilePath: string;
   capturePath: string;
+  expectedAgentHome?: string;
   config?: Record<string, unknown>;
   context?: Record<string, unknown>;
 }) {
@@ -176,7 +280,7 @@ async function expectAgentHomeInjected(input: {
       id: "agent-1",
       companyId: "company-1",
       name: "Test Agent",
-      adapterType: "codex_local",
+      adapterType: input.adapterType,
       adapterConfig: {},
     },
     runtime: {
@@ -187,7 +291,7 @@ async function expectAgentHomeInjected(input: {
     },
     config: {
       command: input.commandPath,
-      cwd: input.cwd,
+      cwd: input.configuredCwd,
       instructionsFilePath: input.instructionsFilePath,
       promptTemplate: "Continue your Paperclip work.",
       env: {
@@ -198,6 +302,7 @@ async function expectAgentHomeInjected(input: {
     context: {
       paperclipWorkspace: {
         source: "agent_home",
+        cwd: input.workspaceCwd,
       },
       ...input.context,
     },
@@ -210,20 +315,28 @@ async function expectAgentHomeInjected(input: {
   expect(result.errorMessage).toBeNull();
 
   const capture = await readCapture(input.capturePath);
-  expect(capture.env.AGENT_HOME).toBe(path.dirname(input.instructionsFilePath));
+  expect(capture.cwd).toBe(input.workspaceCwd);
+  expect(capture.cwd).not.toBe(input.configuredCwd);
+  if (input.expectedAgentHome) {
+    expect(capture.env.AGENT_HOME).toBe(input.expectedAgentHome);
+  }
+  expect(capture.env.PAPERCLIP_WORKSPACE_CWD).toBe(input.workspaceCwd);
+  expect(capture.env.PAPERCLIP_WORKSPACE_SOURCE).toBe("agent_home");
 }
 
 describe("local adapter AGENT_HOME injection", () => {
-  it("injects AGENT_HOME for codex runs from instructionsFilePath", async () => {
+  it("keeps codex runs inside the resolved agent-home workspace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-agent-home-"));
-    const workspace = path.join(root, "workspace");
+    const configuredWorkspace = path.join(root, "configured-workspace");
+    const agentHomeWorkspace = path.join(root, "agent-home-workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
     const instructionsDir = path.join(root, "agents", "ceo");
     const instructionsFilePath = path.join(instructionsDir, "AGENTS.md");
     const previousCodexHome = process.env.CODEX_HOME;
 
-    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(configuredWorkspace, { recursive: true });
+    await fs.mkdir(agentHomeWorkspace, { recursive: true });
     await fs.mkdir(instructionsDir, { recursive: true });
     await fs.writeFile(instructionsFilePath, "# Instructions\n", "utf8");
     await writeFakeCodexCommand(commandPath);
@@ -231,12 +344,15 @@ describe("local adapter AGENT_HOME injection", () => {
     process.env.CODEX_HOME = path.join(root, ".codex");
 
     try {
-      await expectAgentHomeInjected({
+      await expectAgentHomeWorkspaceUsed({
         execute: executeCodex,
+        adapterType: "codex_local",
         commandPath,
-        cwd: workspace,
+        configuredCwd: configuredWorkspace,
+        workspaceCwd: agentHomeWorkspace,
         instructionsFilePath,
         capturePath,
+        expectedAgentHome: path.dirname(instructionsFilePath),
       });
     } finally {
       if (previousCodexHome === undefined) {
@@ -248,42 +364,49 @@ describe("local adapter AGENT_HOME injection", () => {
     }
   });
 
-  it("injects AGENT_HOME for claude runs from instructionsFilePath", async () => {
+  it("keeps claude runs inside the resolved agent-home workspace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-agent-home-"));
-    const workspace = path.join(root, "workspace");
+    const configuredWorkspace = path.join(root, "configured-workspace");
+    const agentHomeWorkspace = path.join(root, "agent-home-workspace");
     const commandPath = path.join(root, "claude");
     const capturePath = path.join(root, "capture.json");
     const instructionsDir = path.join(root, "agents", "ceo");
     const instructionsFilePath = path.join(instructionsDir, "AGENTS.md");
 
-    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(configuredWorkspace, { recursive: true });
+    await fs.mkdir(agentHomeWorkspace, { recursive: true });
     await fs.mkdir(instructionsDir, { recursive: true });
     await fs.writeFile(instructionsFilePath, "# Instructions\n", "utf8");
     await writeFakeClaudeCommand(commandPath);
 
     try {
-      await expectAgentHomeInjected({
+      await expectAgentHomeWorkspaceUsed({
         execute: executeClaude,
+        adapterType: "claude_local",
         commandPath,
-        cwd: workspace,
+        configuredCwd: configuredWorkspace,
+        workspaceCwd: agentHomeWorkspace,
         instructionsFilePath,
         capturePath,
+        expectedAgentHome: path.dirname(instructionsFilePath),
       });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
 
-  it("injects AGENT_HOME for cursor runs from instructionsFilePath", async () => {
+  it("keeps cursor runs inside the resolved agent-home workspace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-agent-home-"));
-    const workspace = path.join(root, "workspace");
+    const configuredWorkspace = path.join(root, "configured-workspace");
+    const agentHomeWorkspace = path.join(root, "agent-home-workspace");
     const commandPath = path.join(root, "agent");
     const capturePath = path.join(root, "capture.json");
     const instructionsDir = path.join(root, "agents", "ceo");
     const instructionsFilePath = path.join(instructionsDir, "AGENTS.md");
     const previousHome = process.env.HOME;
 
-    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(configuredWorkspace, { recursive: true });
+    await fs.mkdir(agentHomeWorkspace, { recursive: true });
     await fs.mkdir(instructionsDir, { recursive: true });
     await fs.writeFile(instructionsFilePath, "# Instructions\n", "utf8");
     await writeFakeCursorCommand(commandPath);
@@ -291,12 +414,15 @@ describe("local adapter AGENT_HOME injection", () => {
     process.env.HOME = root;
 
     try {
-      await expectAgentHomeInjected({
+      await expectAgentHomeWorkspaceUsed({
         execute: executeCursor,
+        adapterType: "cursor",
         commandPath,
-        cwd: workspace,
+        configuredCwd: configuredWorkspace,
+        workspaceCwd: agentHomeWorkspace,
         instructionsFilePath,
         capturePath,
+        expectedAgentHome: path.dirname(instructionsFilePath),
         config: {
           model: "auto",
         },
@@ -311,16 +437,18 @@ describe("local adapter AGENT_HOME injection", () => {
     }
   });
 
-  it("injects AGENT_HOME for opencode runs from instructionsFilePath", async () => {
+  it("keeps opencode runs inside the resolved agent-home workspace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-agent-home-"));
-    const workspace = path.join(root, "workspace");
+    const configuredWorkspace = path.join(root, "configured-workspace");
+    const agentHomeWorkspace = path.join(root, "agent-home-workspace");
     const commandPath = path.join(root, "opencode");
     const capturePath = path.join(root, "capture.json");
     const instructionsDir = path.join(root, "agents", "ceo");
     const instructionsFilePath = path.join(instructionsDir, "AGENTS.md");
     const previousHome = process.env.HOME;
 
-    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(configuredWorkspace, { recursive: true });
+    await fs.mkdir(agentHomeWorkspace, { recursive: true });
     await fs.mkdir(instructionsDir, { recursive: true });
     await fs.writeFile(instructionsFilePath, "# Instructions\n", "utf8");
     await writeFakeOpenCodeCommand(commandPath);
@@ -328,12 +456,15 @@ describe("local adapter AGENT_HOME injection", () => {
     process.env.HOME = root;
 
     try {
-      await expectAgentHomeInjected({
+      await expectAgentHomeWorkspaceUsed({
         execute: executeOpenCode,
+        adapterType: "opencode_local",
         commandPath,
-        cwd: workspace,
+        configuredCwd: configuredWorkspace,
+        workspaceCwd: agentHomeWorkspace,
         instructionsFilePath,
         capturePath,
+        expectedAgentHome: path.dirname(instructionsFilePath),
         config: {
           model: "openai/gpt-5.4",
         },
@@ -344,6 +475,80 @@ describe("local adapter AGENT_HOME injection", () => {
       } else {
         process.env.HOME = previousHome;
       }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps gemini runs inside the resolved agent-home workspace", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-agent-home-"));
+    const configuredWorkspace = path.join(root, "configured-workspace");
+    const agentHomeWorkspace = path.join(root, "agent-home-workspace");
+    const commandPath = path.join(root, "gemini");
+    const capturePath = path.join(root, "capture.json");
+    const instructionsDir = path.join(root, "agents", "ceo");
+    const instructionsFilePath = path.join(instructionsDir, "AGENTS.md");
+    const previousHome = process.env.HOME;
+
+    await fs.mkdir(configuredWorkspace, { recursive: true });
+    await fs.mkdir(agentHomeWorkspace, { recursive: true });
+    await fs.mkdir(instructionsDir, { recursive: true });
+    await fs.writeFile(instructionsFilePath, "# Instructions\n", "utf8");
+    await writeFakeGeminiCommand(commandPath);
+
+    process.env.HOME = root;
+
+    try {
+      await expectAgentHomeWorkspaceUsed({
+        execute: executeGemini,
+        adapterType: "gemini_local",
+        commandPath,
+        configuredCwd: configuredWorkspace,
+        workspaceCwd: agentHomeWorkspace,
+        instructionsFilePath,
+        capturePath,
+        config: {
+          model: "gemini-2.5-pro",
+        },
+      });
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps pi runs inside the resolved agent-home workspace", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-agent-home-"));
+    const configuredWorkspace = path.join(root, "configured-workspace");
+    const agentHomeWorkspace = path.join(root, "agent-home-workspace");
+    const commandPath = path.join(root, "pi");
+    const capturePath = path.join(root, "capture.json");
+    const instructionsDir = path.join(root, "agents", "ceo");
+    const instructionsFilePath = path.join(instructionsDir, "AGENTS.md");
+
+    await fs.mkdir(configuredWorkspace, { recursive: true });
+    await fs.mkdir(agentHomeWorkspace, { recursive: true });
+    await fs.mkdir(instructionsDir, { recursive: true });
+    await fs.writeFile(instructionsFilePath, "# Instructions\n", "utf8");
+    await writeFakePiCommand(commandPath);
+
+    try {
+      await expectAgentHomeWorkspaceUsed({
+        execute: executePi,
+        adapterType: "pi_local",
+        commandPath,
+        configuredCwd: configuredWorkspace,
+        workspaceCwd: agentHomeWorkspace,
+        instructionsFilePath,
+        capturePath,
+        config: {
+          model: "openai/gpt-4.1-mini",
+        },
+      });
+    } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
