@@ -1617,6 +1617,20 @@ function PromptsTab({
     selectedFile: string;
   } | null>(null);
 
+  useEffect(() => {
+    setSelectedFile("AGENTS.md");
+    setShowFilePanel(false);
+    setDraft(null);
+    setBundleDraft(null);
+    setNewFilePath("");
+    setShowNewFileInput(false);
+    setPendingFiles([]);
+    setExpandedDirs(new Set());
+    setAwaitingRefresh(false);
+    lastFileVersionRef.current = null;
+    externalBundleRef.current = null;
+  }, [agent.id]);
+
   const isLocal =
     agent.adapterType === "claude_local" ||
     agent.adapterType === "codex_local" ||
