@@ -1621,6 +1621,35 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Permission denied");
   }
 
+  async function assertCanReadCompanyMembers(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden();
+      const [canManagePermissions, canAssignTasks] = await Promise.all([
+        access.hasPermission(
+          companyId,
+          "agent",
+          req.actor.agentId,
+          "users:manage_permissions",
+        ),
+        access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign"),
+      ]);
+      if (!canManagePermissions && !canAssignTasks) {
+        throw forbidden("Permission denied");
+      }
+      return;
+    }
+    if (req.actor.type !== "board") throw unauthorized();
+    if (isLocalImplicit(req)) return;
+    const [canManagePermissions, canAssignTasks] = await Promise.all([
+      access.canUser(companyId, req.actor.userId, "users:manage_permissions"),
+      access.canUser(companyId, req.actor.userId, "tasks:assign"),
+    ]);
+    if (!canManagePermissions && !canAssignTasks) {
+      throw forbidden("Permission denied");
+    }
+  }
+
   async function assertCanGenerateOpenClawInvitePrompt(
     req: Request,
     companyId: string
@@ -2640,7 +2669,7 @@ export function accessRoutes(
 
   router.get("/companies/:companyId/members", async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    await assertCanReadCompanyMembers(req, companyId);
     const members = await access.listMembers(companyId);
     res.json(members);
   });

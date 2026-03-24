@@ -1,11 +1,16 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  authUsers,
   companyMemberships,
   instanceUserRoles,
   principalPermissionGrants,
 } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type {
+  CompanyMemberDirectoryEntry,
+  PermissionKey,
+  PrincipalType,
+} from "@paperclipai/shared";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -75,12 +80,50 @@ export function accessService(db: Db) {
     return hasPermission(companyId, "user", userId, permissionKey);
   }
 
-  async function listMembers(companyId: string) {
-    return db
-      .select()
+  async function listMembers(companyId: string): Promise<CompanyMemberDirectoryEntry[]> {
+    const rows = await db
+      .select({
+        id: companyMemberships.id,
+        companyId: companyMemberships.companyId,
+        principalType: companyMemberships.principalType,
+        principalId: companyMemberships.principalId,
+        status: companyMemberships.status,
+        membershipRole: companyMemberships.membershipRole,
+        createdAt: companyMemberships.createdAt,
+        updatedAt: companyMemberships.updatedAt,
+        userId: authUsers.id,
+        userEmail: authUsers.email,
+        userName: authUsers.name,
+      })
       .from(companyMemberships)
+      .leftJoin(
+        authUsers,
+        and(
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, authUsers.id),
+        ),
+      )
       .where(eq(companyMemberships.companyId, companyId))
       .orderBy(sql`${companyMemberships.createdAt} desc`);
+
+    return rows.map((row) => ({
+      id: row.id,
+      companyId: row.companyId,
+      principalType: row.principalType as CompanyMemberDirectoryEntry["principalType"],
+      principalId: row.principalId,
+      status: row.status as CompanyMemberDirectoryEntry["status"],
+      membershipRole: row.membershipRole,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      user:
+        row.userId && row.userEmail && row.userName
+          ? {
+              id: row.userId,
+              email: row.userEmail,
+              name: row.userName,
+            }
+          : null,
+    }));
   }
 
   async function listActiveUserMemberships(companyId: string) {
