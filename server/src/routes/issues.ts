@@ -31,8 +31,9 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { badRequest, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { INVALID_ISSUE_REFERENCE_MESSAGE, parseIssueReference } from "./issue-reference.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
@@ -278,13 +279,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
   }
 
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
-      const issue = await svc.getByIdentifier(rawId);
-      if (issue) {
-        return issue.id;
+    const parsed = parseIssueReference(rawId);
+    if (parsed.kind === "uuid") return parsed.value;
+    if (parsed.kind === "identifier") {
+      const issue = await svc.getByIdentifier(parsed.value);
+      if (!issue) {
+        throw notFound("Issue not found");
       }
+      return issue.id;
     }
-    return rawId;
+    throw badRequest(INVALID_ISSUE_REFERENCE_MESSAGE);
   }
 
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes

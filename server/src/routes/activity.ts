@@ -3,8 +3,10 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
+import { badRequest } from "../errors.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { issueService } from "../services/index.js";
+import { INVALID_ISSUE_REFERENCE_MESSAGE, parseIssueReference } from "./issue-reference.js";
 import { sanitizeRecord } from "../redaction.js";
 
 const createActivitySchema = z.object({
@@ -23,10 +25,14 @@ export function activityRoutes(db: Db) {
   const issueSvc = issueService(db);
 
   async function resolveIssueByRef(rawId: string) {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
-      return issueSvc.getByIdentifier(rawId);
+    const parsed = parseIssueReference(rawId);
+    if (parsed.kind === "identifier") {
+      return issueSvc.getByIdentifier(parsed.value);
     }
-    return issueSvc.getById(rawId);
+    if (parsed.kind === "uuid") {
+      return issueSvc.getById(parsed.value);
+    }
+    throw badRequest(INVALID_ISSUE_REFERENCE_MESSAGE);
   }
 
   router.get("/companies/:companyId/activity", async (req, res) => {

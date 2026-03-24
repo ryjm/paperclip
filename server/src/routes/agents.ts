@@ -42,8 +42,9 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { INVALID_ISSUE_REFERENCE_MESSAGE, parseIssueReference } from "./issue-reference.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -88,6 +89,7 @@ export function agentRoutes(db: Db) {
   const budgets = budgetService(db);
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
@@ -104,6 +106,17 @@ export function agentRoutes(db: Db) {
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  }
+
+  async function resolveIssueReference(rawId: string) {
+    const parsed = parseIssueReference(rawId);
+    if (parsed.kind === "identifier") {
+      return issuesSvc.getByIdentifier(parsed.value);
+    }
+    if (parsed.kind === "uuid") {
+      return issuesSvc.getById(parsed.value);
+    }
+    throw badRequest(INVALID_ISSUE_REFERENCE_MESSAGE);
   }
 
   async function buildAgentAccessState(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
@@ -2230,9 +2243,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/issues/:issueId/live-runs", async (req, res) => {
     const rawId = req.params.issueId as string;
-    const issueSvc = issueService(db);
-    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
-    const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
+    const issue = await resolveIssueReference(rawId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -2268,9 +2279,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/issues/:issueId/active-run", async (req, res) => {
     const rawId = req.params.issueId as string;
-    const issueSvc = issueService(db);
-    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
-    const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
+    const issue = await resolveIssueReference(rawId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;

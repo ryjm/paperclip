@@ -67,4 +67,15 @@ describe("activity routes", () => {
     expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
     expect(res.body).toEqual([{ runId: "run-1" }]);
   });
+
+  it("rejects malformed issue route ids before hitting the database lookup", async () => {
+    const res = await request(createApp()).get("/api/issues/undefined/activity");
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "Invalid issue id. Use an issue UUID or identifier like PAP-123.",
+    });
+    expect(mockIssueService.getByIdentifier).not.toHaveBeenCalled();
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+  });
 });
