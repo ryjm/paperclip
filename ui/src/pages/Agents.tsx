@@ -38,7 +38,14 @@ type FilterTab = "all" | "active" | "paused" | "error";
 function matchesFilter(status: string, tab: FilterTab, showTerminated: boolean): boolean {
   if (status === "terminated") return showTerminated;
   if (tab === "all") return true;
-  if (tab === "active") return status === "active" || status === "running" || status === "idle";
+  if (tab === "active") {
+    return (
+      status === "active" ||
+      status === "running" ||
+      status === "idle" ||
+      status === "capacity_blocked"
+    );
+  }
   if (tab === "paused") return status === "paused";
   if (tab === "error") return status === "error";
   return true;

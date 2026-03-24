@@ -68,7 +68,7 @@ async function waitForAgentState(
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
     const cooldown = (agent?.metadata as Record<string, unknown> | null)?.paperclipWakeCooldown;
-    if (agent?.status === "idle" && cooldown) {
+    if (agent?.status === "capacity_blocked" && cooldown) {
       return agent;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -112,7 +112,7 @@ describe("heartbeatService quota cooldown suppression", () => {
     await rm(databaseDir, { recursive: true, force: true });
   }, 120_000);
 
-  it("persists Claude quota cooldowns, keeps the agent idle, and requires explicit override for manual retries", async () => {
+  it("persists Claude quota cooldowns, marks the agent capacity blocked, and requires explicit override for manual retries", async () => {
     const svc = heartbeatService(db);
     const root = await mkdtemp(join(tmpdir(), "paperclip-quota-claude-"));
     const workspace = join(root, "workspace");
@@ -177,7 +177,7 @@ describe("heartbeatService quota cooldown suppression", () => {
 
     const updatedAgent = await waitForAgentState(db, agentId);
 
-    expect(updatedAgent?.status).toBe("idle");
+    expect(updatedAgent?.status).toBe("capacity_blocked");
     expect(updatedAgent?.metadata).toMatchObject({
       paperclipWakeCooldown: {
         kind: "provider_quota_reset",

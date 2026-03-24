@@ -1682,7 +1682,7 @@ export function heartbeatService(db: Db) {
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
-    opts?: { treatFailureAsIdle?: boolean },
+    opts?: { failedStatusOverride?: "idle" | "capacity_blocked" },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -1696,9 +1696,10 @@ export function heartbeatService(db: Db) {
       runningCount > 0
         ? "running"
         : outcome === "succeeded" ||
-            outcome === "cancelled" ||
-            ((outcome === "failed" || outcome === "timed_out") && opts?.treatFailureAsIdle)
+            outcome === "cancelled"
           ? "idle"
+          : (outcome === "failed" || outcome === "timed_out") && opts?.failedStatusOverride
+            ? opts.failedStatusOverride
           : "error";
 
     const updated = await db
@@ -1713,6 +1714,7 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      const wakeCooldown = readAgentWakeCooldown(updated.metadata);
       publishLiveEvent({
         companyId: updated.companyId,
         type: "agent.status",
@@ -1723,6 +1725,7 @@ export function heartbeatService(db: Db) {
             ? new Date(updated.lastHeartbeatAt).toISOString()
             : null,
           outcome,
+          wakeCooldown,
         },
       });
     }
@@ -2693,7 +2696,7 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome, {
-        treatFailureAsIdle: Boolean(wakeCooldown),
+        failedStatusOverride: wakeCooldown ? "capacity_blocked" : undefined,
       });
     } catch (err) {
       const message = redactCurrentUserText(

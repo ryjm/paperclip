@@ -232,12 +232,19 @@ export function Dashboard() {
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
             <MetricCard
               icon={Bot}
-              value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
+              value={
+                data.agents.active +
+                data.agents.running +
+                data.agents.capacityBlocked +
+                data.agents.paused +
+                data.agents.error
+              }
               label="Agents Enabled"
               to="/agents"
               description={
                 <span>
                   {data.agents.running} running{", "}
+                  {data.agents.capacityBlocked} capacity blocked{", "}
                   {data.agents.paused} paused{", "}
                   {data.agents.error} errors
                 </span>

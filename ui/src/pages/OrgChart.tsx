@@ -132,6 +132,7 @@ const statusDotColor: Record<string, string> = {
   active: "#4ade80",
   paused: "#facc15",
   idle: "#facc15",
+  capacity_blocked: "#f59e0b",
   error: "#f87171",
   terminated: "#a3a3a3",
 };

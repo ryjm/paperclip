@@ -126,7 +126,7 @@ function resolveIssueToastContext(
 }
 
 const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
-const AGENT_TOAST_STATUSES = new Set(["running", "error"]);
+const AGENT_TOAST_STATUSES = new Set(["running", "capacity_blocked", "error"]);
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled"]);
 
 function describeIssueUpdate(details: Record<string, unknown> | null): string | null {
@@ -271,16 +271,30 @@ function buildAgentStatusToast(
   const status = readString(payload.status);
   if (!agentId || !status || !AGENT_TOAST_STATUSES.has(status)) return null;
 
-  const tone = status === "error" ? "error" : "info";
+  const wakeCooldown = readRecord(payload.wakeCooldown);
+  const cooldownMessage = readString(wakeCooldown?.message);
+  const cooldownResetLabel = readString(wakeCooldown?.resetLabel);
+  const cooldownResetAt = readString(wakeCooldown?.resetAt);
+  const tone = status === "error" ? "error" : status === "capacity_blocked" ? "warn" : "info";
   const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
   const title =
     status === "running"
       ? `${name} started`
-      : `${name} errored`;
+      : status === "capacity_blocked"
+        ? `${name} is capacity blocked`
+        : `${name} errored`;
 
   const agents = queryClient.getQueryData<Agent[]>(queryKeys.agents.list(companyId));
   const agent = agents?.find((a) => a.id === agentId);
-  const body = agent?.title ?? undefined;
+  const body =
+    status === "capacity_blocked"
+      ? cooldownMessage ??
+        (cooldownResetLabel
+          ? `Provider quota resets ${cooldownResetLabel}.`
+          : cooldownResetAt
+            ? `Provider quota resets ${new Date(cooldownResetAt).toLocaleString()}.`
+            : agent?.title ?? undefined)
+      : agent?.title ?? undefined;
 
   return {
     title,

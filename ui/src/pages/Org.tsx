@@ -8,6 +8,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { ChevronRight, GitBranch } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -40,6 +41,7 @@ function OrgTreeNode({
 }) {
   const [expanded, setExpanded] = useState(true);
   const hasChildren = node.reports.length > 0;
+  const statusDotClass = agentStatusDot[node.status] ?? agentStatusDotDefault;
 
   return (
     <div>
@@ -67,15 +69,7 @@ function OrgTreeNode({
         <span
           className={cn(
             "h-2 w-2 rounded-full shrink-0",
-            node.status === "active"
-              ? "bg-green-400"
-              : node.status === "paused"
-                ? "bg-yellow-400"
-                : node.status === "pending_approval"
-                  ? "bg-amber-400"
-                : node.status === "error"
-                  ? "bg-red-400"
-                  : "bg-neutral-400"
+            statusDotClass,
           )}
         />
         <span className="font-medium flex-1">{node.name}</span>

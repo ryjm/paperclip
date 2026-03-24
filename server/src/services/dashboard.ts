@@ -37,13 +37,26 @@ export function dashboardService(db: Db) {
       const agentCounts: Record<string, number> = {
         active: 0,
         running: 0,
+        capacityBlocked: 0,
         paused: 0,
         error: 0,
       };
       for (const row of agentRows) {
         const count = Number(row.count);
-        // "idle" agents are operational — count them as active
-        const bucket = row.status === "idle" ? "active" : row.status;
+        let bucket: keyof typeof agentCounts | null = null;
+        if (row.status === "idle") {
+          bucket = "active";
+        } else if (row.status === "capacity_blocked") {
+          bucket = "capacityBlocked";
+        } else if (
+          row.status === "active" ||
+          row.status === "running" ||
+          row.status === "paused" ||
+          row.status === "error"
+        ) {
+          bucket = row.status;
+        }
+        if (!bucket) continue;
         agentCounts[bucket] = (agentCounts[bucket] ?? 0) + count;
       }
 
@@ -87,6 +100,7 @@ export function dashboardService(db: Db) {
         agents: {
           active: agentCounts.active,
           running: agentCounts.running,
+          capacityBlocked: agentCounts.capacityBlocked,
           paused: agentCounts.paused,
           error: agentCounts.error,
         },
