@@ -26,7 +26,12 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, routineService } from "./services/index.js";
+import {
+  cleanupLegacyManagedProjectWorkspaces,
+  heartbeatService,
+  reconcilePersistedRuntimeServicesOnStartup,
+  routineService,
+} from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -522,6 +527,33 @@ export async function startServer(): Promise<StartedServer> {
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
+    });
+
+  void cleanupLegacyManagedProjectWorkspaces({ db: db as any })
+    .then((result) => {
+      if (
+        result.removedWorkspaces > 0 ||
+        result.prunedIssueBranches > 0 ||
+        result.skippedActiveBranches > 0 ||
+        result.warnings.length > 0
+      ) {
+        logger.warn(
+          {
+            scannedMetadataFiles: result.scannedMetadataFiles,
+            matchedIssueWorkspaces: result.matchedIssueWorkspaces,
+            removedWorkspaces: result.removedWorkspaces,
+            prunedIssueBranches: result.prunedIssueBranches,
+            skippedActiveBranches: result.skippedActiveBranches,
+            skippedNonTerminal: result.skippedNonTerminal,
+            skippedMissingIssue: result.skippedMissingIssue,
+            warnings: result.warnings,
+          },
+          "startup cleanup swept legacy managed workspaces for terminal issues",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup cleanup of legacy managed workspaces failed");
     });
   
   if (config.heartbeatSchedulerEnabled) {
