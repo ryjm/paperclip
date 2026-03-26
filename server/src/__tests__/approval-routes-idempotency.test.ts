@@ -31,6 +31,8 @@ const mockSecretService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const APPROVAL_ID = "11111111-1111-4111-8111-111111111111";
+
 vi.mock("../services/index.js", () => ({
   approvalService: () => mockApprovalService,
   heartbeatService: () => mockHeartbeatService,
@@ -68,7 +70,7 @@ describe("approval routes idempotent retries", () => {
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
     mockApprovalService.approve.mockResolvedValue({
       approval: {
-        id: "approval-1",
+        id: APPROVAL_ID,
         companyId: "company-1",
         type: "hire_agent",
         status: "approved",
@@ -79,7 +81,7 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(createApp())
-      .post("/api/approvals/approval-1/approve")
+      .post(`/api/approvals/${APPROVAL_ID}/approve`)
       .send({});
 
     expect(res.status).toBe(200);
@@ -91,7 +93,7 @@ describe("approval routes idempotent retries", () => {
   it("does not emit duplicate rejection logs when reject is already resolved", async () => {
     mockApprovalService.reject.mockResolvedValue({
       approval: {
-        id: "approval-1",
+        id: APPROVAL_ID,
         companyId: "company-1",
         type: "hire_agent",
         status: "rejected",
@@ -101,7 +103,7 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(createApp())
-      .post("/api/approvals/approval-1/reject")
+      .post(`/api/approvals/${APPROVAL_ID}/reject`)
       .send({});
 
     expect(res.status).toBe(200);

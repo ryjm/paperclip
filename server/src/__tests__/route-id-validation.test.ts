@@ -1,53 +1,67 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { goalRoutes } from "../routes/goals.js";
 import { approvalRoutes } from "../routes/approvals.js";
 import { projectRoutes } from "../routes/projects.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
+const mockGoalService = vi.hoisted(() => ({
+  list: vi.fn(),
+  getById: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+  remove: vi.fn(),
+}));
+
+const mockApprovalService = vi.hoisted(() => ({
+  list: vi.fn(),
+  getById: vi.fn(),
+  create: vi.fn(),
+  approve: vi.fn(),
+  reject: vi.fn(),
+  requestRevision: vi.fn(),
+  resubmit: vi.fn(),
+  listComments: vi.fn(),
+  addComment: vi.fn(),
+}));
+
+const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(),
+}));
+
+const mockIssueApprovalService = vi.hoisted(() => ({
+  linkManyForApproval: vi.fn(),
+  listIssuesForApproval: vi.fn(),
+}));
+
+const mockSecretService = vi.hoisted(() => ({
+  normalizeHireApprovalPayloadForPersistence: vi.fn(),
+}));
+
+const mockProjectService = vi.hoisted(() => ({
+  list: vi.fn(),
+  getById: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+  remove: vi.fn(),
+  resolveByReference: vi.fn(),
+  listWorkspaces: vi.fn(),
+  createWorkspace: vi.fn(),
+  updateWorkspace: vi.fn(),
+  removeWorkspace: vi.fn(),
+}));
+
+const mockLogActivity = vi.hoisted(() => vi.fn());
+
 vi.mock("../services/index.js", () => ({
-  goalService: () => ({
-    list: vi.fn(),
-    getById: vi.fn(),
-    create: vi.fn(),
-    update: vi.fn(),
-    remove: vi.fn(),
-  }),
-  approvalService: () => ({
-    list: vi.fn(),
-    getById: vi.fn(),
-    create: vi.fn(),
-    approve: vi.fn(),
-    reject: vi.fn(),
-    requestRevision: vi.fn(),
-    resubmit: vi.fn(),
-    listComments: vi.fn(),
-    addComment: vi.fn(),
-  }),
-  heartbeatService: () => ({
-    wakeup: vi.fn(),
-  }),
-  issueApprovalService: () => ({
-    linkManyForApproval: vi.fn(),
-    listIssuesForApproval: vi.fn(),
-  }),
-  secretService: () => ({
-    normalizeHireApprovalPayloadForPersistence: vi.fn(),
-  }),
-  projectService: () => ({
-    list: vi.fn(),
-    getById: vi.fn(),
-    create: vi.fn(),
-    update: vi.fn(),
-    remove: vi.fn(),
-    resolveByReference: vi.fn().mockResolvedValue({ project: null, ambiguous: false }),
-    listWorkspaces: vi.fn(),
-    createWorkspace: vi.fn(),
-    updateWorkspace: vi.fn(),
-    removeWorkspace: vi.fn(),
-  }),
-  logActivity: vi.fn(),
+  goalService: () => mockGoalService,
+  approvalService: () => mockApprovalService,
+  heartbeatService: () => mockHeartbeatService,
+  issueApprovalService: () => mockIssueApprovalService,
+  secretService: () => mockSecretService,
+  projectService: () => mockProjectService,
+  logActivity: mockLogActivity,
 }));
 
 function actorMiddleware() {
@@ -65,6 +79,7 @@ function actorMiddleware() {
 describe("goal routes malformed id", () => {
   function buildApp() {
     const app = express();
+    app.use(express.json());
     app.use(actorMiddleware());
     app.use("/api", goalRoutes({} as any));
     app.use(errorHandler);
@@ -95,6 +110,7 @@ describe("goal routes malformed id", () => {
 describe("approval routes malformed id", () => {
   function buildApp() {
     const app = express();
+    app.use(express.json());
     app.use(actorMiddleware());
     app.use("/api", approvalRoutes({} as any));
     app.use(errorHandler);
@@ -121,13 +137,23 @@ describe("approval routes malformed id", () => {
 });
 
 describe("project routes malformed id", () => {
+  const projectId = "22222222-2222-4222-8222-222222222222";
+
   function buildApp() {
     const app = express();
+    app.use(express.json());
     app.use(actorMiddleware());
     app.use("/api", projectRoutes({} as any));
     app.use(errorHandler);
     return app;
   }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockProjectService.resolveByReference.mockResolvedValue({ project: null, ambiguous: false });
+    mockProjectService.getById.mockResolvedValue(null);
+    mockProjectService.update.mockResolvedValue(null);
+  });
 
   it("rejects non-UUID non-shortname id with 400 on GET /projects/:id", async () => {
     const res = await request(buildApp()).get("/api/projects/undefined");
@@ -147,5 +173,28 @@ describe("project routes malformed id", () => {
     const res = await request(buildApp()).delete("/api/projects/not-a-uuid");
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Invalid project id/);
+  });
+
+  it("converts archivedAt strings back into Date objects before patching projects", async () => {
+    const archivedAt = "2026-03-24T12:34:56.000Z";
+    mockProjectService.getById.mockResolvedValue({
+      id: projectId,
+      companyId: "company-1",
+    });
+    mockProjectService.update.mockResolvedValue({
+      id: projectId,
+      companyId: "company-1",
+      archivedAt: new Date(archivedAt),
+    });
+
+    const res = await request(buildApp())
+      .patch(`/api/projects/${projectId}`)
+      .send({ archivedAt });
+
+    expect(res.status).toBe(200);
+    expect(mockProjectService.update).toHaveBeenCalledTimes(1);
+    const updateInput = mockProjectService.update.mock.calls[0]?.[1];
+    expect(updateInput).toMatchObject({ archivedAt: expect.any(Date) });
+    expect((updateInput as { archivedAt: Date }).archivedAt.toISOString()).toBe(archivedAt);
   });
 });
