@@ -9,7 +9,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity } from "../services/index.js";
-import { conflict } from "../errors.js";
+import { badRequest, conflict } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function projectRoutes(db: Db) {
@@ -35,12 +35,13 @@ export function projectRoutes(db: Db) {
   async function normalizeProjectReference(req: Request, rawId: string) {
     if (isUuidLike(rawId)) return rawId;
     const companyId = await resolveCompanyIdForProjectReference(req);
-    if (!companyId) return rawId;
+    if (!companyId) throw badRequest(`Invalid project id: ${rawId}`);
     const resolved = await svc.resolveByReference(companyId, rawId);
     if (resolved.ambiguous) {
       throw conflict("Project shortname is ambiguous in this company. Use the project ID.");
     }
-    return resolved.project?.id ?? rawId;
+    if (resolved.project) return resolved.project.id;
+    throw badRequest(`Invalid project id: ${rawId}`);
   }
 
   router.param("id", async (req, _res, next, rawId) => {
