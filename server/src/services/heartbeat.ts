@@ -2198,6 +2198,11 @@ export function heartbeatService(db: Db) {
       issueRef?.executionWorkspacePreference === "reuse_existing" &&
       existingExecutionWorkspace &&
       existingExecutionWorkspace.status !== "archived";
+    const persistedStrategyType =
+      executionWorkspace.strategy === "git_worktree" || executionWorkspace.strategy === "git_clone"
+        ? executionWorkspace.strategy
+        : "project_primary";
+    const persistedProviderType = executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs";
     let persistedExecutionWorkspace = null;
     try {
       persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
@@ -2206,7 +2211,8 @@ export function heartbeatService(db: Db) {
             repoUrl: executionWorkspace.repoUrl,
             baseRef: executionWorkspace.repoRef,
             branchName: executionWorkspace.branchName,
-            providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+            strategyType: persistedStrategyType,
+            providerType: persistedProviderType,
             providerRef: executionWorkspace.worktreePath,
             status: "active",
             lastUsedAt: new Date(),
@@ -2227,17 +2233,17 @@ export function heartbeatService(db: Db) {
                   ? "isolated_workspace"
                   : executionWorkspaceMode === "operator_branch"
                     ? "operator_branch"
-                    : executionWorkspaceMode === "agent_default"
-                      ? "adapter_managed"
-                      : "shared_workspace",
-              strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
+                  : executionWorkspaceMode === "agent_default"
+                    ? "adapter_managed"
+                    : "shared_workspace",
+              strategyType: persistedStrategyType,
               name: executionWorkspace.branchName ?? issueRef?.identifier ?? `workspace-${agent.id.slice(0, 8)}`,
               status: "active",
               cwd: executionWorkspace.cwd,
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
               branchName: executionWorkspace.branchName,
-              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+              providerType: persistedProviderType,
               providerRef: executionWorkspace.worktreePath,
               lastUsedAt: new Date(),
               openedAt: new Date(),
@@ -2254,7 +2260,7 @@ export function heartbeatService(db: Db) {
             workspace: {
               id: existingExecutionWorkspace?.id ?? `transient-${run.id}`,
               cwd: executionWorkspace.cwd,
-              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+              providerType: persistedProviderType,
               providerRef: executionWorkspace.worktreePath,
               branchName: executionWorkspace.branchName,
               repoUrl: executionWorkspace.repoUrl,

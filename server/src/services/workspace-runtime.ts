@@ -34,7 +34,7 @@ export interface ExecutionWorkspaceAgentRef {
 }
 
 export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
-  strategy: "project_primary" | "git_worktree";
+  strategy: "project_primary" | "git_clone" | "git_worktree";
   cwd: string;
   branchName: string | null;
   worktreePath: string | null;
@@ -269,6 +269,16 @@ async function runGit(args: string[], cwd: string): Promise<string> {
 function gitErrorIncludes(error: unknown, needle: string) {
   const message = error instanceof Error ? error.message : String(error);
   return message.toLowerCase().includes(needle.toLowerCase());
+}
+
+async function resolveGitDirectoryInfo(cwd: string): Promise<{ gitDir: string; commonDir: string } | null> {
+  const gitDir = await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null);
+  if (!gitDir) return null;
+  const commonDir = await runGit(["rev-parse", "--git-common-dir"], cwd).catch(() => gitDir);
+  return {
+    gitDir: path.resolve(cwd, gitDir),
+    commonDir: path.resolve(cwd, commonDir),
+  };
 }
 
 async function directoryExists(value: string) {
@@ -549,7 +559,7 @@ export async function realizeExecutionWorkspace(input: {
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
-  if (strategyType !== "git_worktree") {
+  if (strategyType !== "git_worktree" && strategyType !== "git_clone") {
     return {
       ...input.base,
       strategy: "project_primary",
@@ -573,7 +583,7 @@ export async function realizeExecutionWorkspace(input: {
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
-    : path.join(repoRoot, ".paperclip", "worktrees");
+    : path.join(repoRoot, ".paperclip", strategyType === "git_clone" ? "workspaces" : "worktrees");
   const worktreePath = path.join(worktreeParentDir, branchName);
   const baseRef = asString(rawStrategy.baseRef, input.base.repoRef ?? "HEAD");
 
@@ -581,8 +591,13 @@ export async function realizeExecutionWorkspace(input: {
 
   const existingWorktree = await directoryExists(worktreePath);
   if (existingWorktree) {
-    const existingGitDir = await runGit(["rev-parse", "--git-dir"], worktreePath).catch(() => null);
-    if (existingGitDir) {
+    const existingGitInfo = await resolveGitDirectoryInfo(worktreePath);
+    if (existingGitInfo) {
+      if (strategyType === "git_clone" && existingGitInfo.gitDir !== existingGitInfo.commonDir) {
+        throw new Error(
+          `Configured workspace path "${worktreePath}" already exists but still shares git common-dir "${existingGitInfo.commonDir}". Remove it or choose a different parent directory before using git_clone.`,
+        );
+      }
       if (input.recorder) {
         await input.recorder.recordOperation({
           phase: "worktree_prepare",
@@ -594,11 +609,12 @@ export async function realizeExecutionWorkspace(input: {
             baseRef,
             created: false,
             reused: true,
+            strategyType,
           },
           run: async () => ({
             status: "succeeded",
             exitCode: 0,
-            system: `Reused existing git worktree at ${worktreePath}\n`,
+            system: `Reused existing ${strategyType === "git_clone" ? "git clone" : "git worktree"} at ${worktreePath}\n`,
           }),
         });
       }
@@ -615,7 +631,7 @@ export async function realizeExecutionWorkspace(input: {
       });
       return {
         ...input.base,
-        strategy: "git_worktree",
+        strategy: strategyType === "git_clone" ? "git_clone" : "git_worktree",
         cwd: worktreePath,
         branchName,
         worktreePath,
@@ -623,13 +639,15 @@ export async function realizeExecutionWorkspace(input: {
         created: false,
       };
     }
-    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a git worktree.`);
+    throw new Error(
+      `Configured workspace path "${worktreePath}" already exists and is not a git repository.`,
+    );
   }
 
-  try {
+  if (strategyType === "git_clone") {
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
-      args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
+      args: ["clone", "--no-local", "--no-checkout", repoRoot, worktreePath],
       cwd: repoRoot,
       metadata: {
         repoRoot,
@@ -637,29 +655,65 @@ export async function realizeExecutionWorkspace(input: {
         branchName,
         baseRef,
         created: true,
+        strategyType,
       },
-      successMessage: `Created git worktree at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
+      successMessage: `Created git clone at ${worktreePath}\n`,
+      failureLabel: `git clone ${worktreePath}`,
     });
-  } catch (error) {
-    if (!gitErrorIncludes(error, "already exists")) {
-      throw error;
-    }
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
-      args: ["worktree", "add", worktreePath, branchName],
-      cwd: repoRoot,
+      args: ["checkout", "-B", branchName, baseRef],
+      cwd: worktreePath,
       metadata: {
         repoRoot,
         worktreePath,
         branchName,
         baseRef,
-        created: false,
-        reusedExistingBranch: true,
+        created: true,
+        strategyType,
+        checkoutAction: "branch_reset",
       },
-      successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
+      successMessage: `Checked out branch ${branchName} at ${worktreePath}\n`,
+      failureLabel: `git checkout -B ${branchName}`,
     });
+  } else {
+    try {
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef,
+          created: true,
+          strategyType,
+        },
+        successMessage: `Created git worktree at ${worktreePath}\n`,
+        failureLabel: `git worktree add ${worktreePath}`,
+      });
+    } catch (error) {
+      if (!gitErrorIncludes(error, "already exists")) {
+        throw error;
+      }
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["worktree", "add", worktreePath, branchName],
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef,
+          created: false,
+          reusedExistingBranch: true,
+          strategyType,
+        },
+        successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
+        failureLabel: `git worktree add ${worktreePath}`,
+      });
+    }
   }
   await provisionExecutionWorktree({
     strategy: rawStrategy,
@@ -675,7 +729,7 @@ export async function realizeExecutionWorkspace(input: {
 
   return {
     ...input.base,
-    strategy: "git_worktree",
+    strategy: strategyType === "git_clone" ? "git_clone" : "git_worktree",
     cwd: worktreePath,
     branchName,
     worktreePath,
