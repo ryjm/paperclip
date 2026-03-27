@@ -137,6 +137,7 @@ describe("heartbeat orphaned process recovery", () => {
     processPid?: number | null;
     processLossRetryCount?: number;
     includeIssue?: boolean;
+    issueStatus?: "backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled";
     runErrorCode?: string | null;
     runError?: string | null;
   }) {
@@ -202,7 +203,7 @@ describe("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         title: "Recover local adapter after lost process",
-        status: "in_progress",
+        status: input?.issueStatus ?? "in_progress",
         priority: "medium",
         assigneeAgentId: agentId,
         checkoutRunId: runId,
@@ -300,6 +301,44 @@ describe("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("does not queue a retry when the linked issue is already done", async () => {
+    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      processPid: 999_999_999,
+      issueStatus: "done",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.error).toBe("Process lost -- child pid 999999999 is no longer running");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("done");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+    expect(wakeup?.error).toBe("Process lost -- child pid 999999999 is no longer running");
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

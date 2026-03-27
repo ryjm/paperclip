@@ -63,6 +63,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1522,6 +1523,39 @@ export function heartbeatService(db: Db) {
     };
 
     const queued = await db.transaction(async (tx) => {
+      if (issueId) {
+        await tx.execute(
+          sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+        );
+
+        const issue = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!issue || issue.executionRunId !== run.id) {
+          return null;
+        }
+
+        if (TERMINAL_ISSUE_STATUSES.has(issue.status)) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, issue.id));
+          return null;
+        }
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -1582,6 +1616,10 @@ export function heartbeatService(db: Db) {
 
       return retryRun;
     });
+
+    if (!queued) {
+      return null;
+    }
 
     publishLiveEvent({
       companyId: queued.companyId,
@@ -1783,13 +1821,13 @@ export function heartbeatService(db: Db) {
         : "Process lost -- server may have restarted";
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -1802,6 +1840,20 @@ export function heartbeatService(db: Db) {
         }
       } else {
         await releaseIssueExecutionAndPromote(finalizedRun);
+      }
+
+      if (retriedRun) {
+        const retryMessage = `${baseMessage}; retrying once`;
+        finalizedRun =
+          (await setRunStatus(finalizedRun.id, "failed", {
+            error: retryMessage,
+            errorCode: "process_lost",
+            finishedAt: now,
+          })) ?? finalizedRun;
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: now,
+          error: retryMessage,
+        });
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
