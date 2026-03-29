@@ -25,7 +25,9 @@ The `gemini_local` adapter runs Google's Gemini CLI locally. It supports session
 
 ## Session Persistence
 
-The adapter persists Gemini session IDs between heartbeats. On the next wake, it resumes the existing conversation with `--resume` so the agent retains context.
+The adapter persists Gemini session IDs between heartbeats. When a wake carries task context, Paperclip stores that session against the task and resumes it on later wakes for the same task with `--resume` so the agent retains context.
+
+Wakes without task context do not automatically resume the last task-scoped conversation. In that case the adapter only falls back to the agent runtime session if one is still available.
 
 Session resume is cwd-aware: if the working directory changed since the last run, a fresh session starts instead.
 

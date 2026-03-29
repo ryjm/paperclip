@@ -42,7 +42,9 @@ See [Environment Variables](../../deploy/environment-variables.md) for the full 
 
 ## Session Persistence
 
-Agents maintain conversation context across heartbeats through session persistence. The adapter serializes session state (e.g. Claude Code session ID) after each run and restores it on the next wake. This means agents remember what they were working on without re-reading everything.
+Agents maintain conversation context across heartbeats through session persistence, but the saved session is task-scoped when the wake carries task context. After each task-backed run, Paperclip stores the adapter session state (for example a Claude Code session ID) against that task and restores it on later wakes for the same task.
+
+Wakes without task context do not automatically inherit the last task conversation. In that case Paperclip only falls back to the agent's runtime session if one is still available for the adapter/runtime; otherwise the wake starts fresh.
 
 ## Agent Status
 
