@@ -52,10 +52,13 @@
     }
   },
   "bin": {
-    "paperclip-plugin-dev-server": "./dist/dev-cli.js"
+    "paperclip-plugin-dev-server": "./dev-cli.mjs"
   },
   "publishConfig": {
     "access": "public",
+    "bin": {
+      "paperclip-plugin-dev-server": "./dist/dev-cli.js"
+    },
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
