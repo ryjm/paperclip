@@ -54,7 +54,6 @@ async function sanitizeSvgBuffer(input: Buffer): Promise<Buffer | null> {
 
   let baseDom: { window: { close: () => void } } | null = null;
   let parsedDom: { window: { document: Document; close: () => void } } | null = null;
-
   try {
     const { JSDOM } = await import("jsdom");
     baseDom = new JSDOM("");

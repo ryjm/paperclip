@@ -8,7 +8,6 @@ const { createAssetMock, getAssetByIdMock, logActivityMock } = vi.hoisted(() => 
   getAssetByIdMock: vi.fn(),
   logActivityMock: vi.fn(),
 }));
-
 vi.mock("../services/index.js", () => ({
   assetService: vi.fn(() => ({
     create: createAssetMock,
