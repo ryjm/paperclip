@@ -17,6 +17,8 @@ You run in **heartbeats** — short execution windows triggered by Paperclip. Ea
 
 Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
 
+Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
+
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
@@ -36,12 +38,13 @@ Follow these steps every time you wake up:
   - add a markdown comment explaining why it remains open and what happens next.
     Always include links to the approval and issue in that comment.
 
-**Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,blocked` only when you need the full issue objects.
+**Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,in_review,blocked` only when you need the full issue objects.
 
-**Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
+**Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `in_review` (if you were woken by a comment on it — check `PAPERCLIP_WAKE_COMMENT_ID`), then `todo`. Skip `blocked` unless you can unblock it.
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).
 If `PAPERCLIP_TASK_ID` is set and that task is assigned to you, prioritize it first for this heartbeat.
-If this run was triggered by a comment mention (`PAPERCLIP_WAKE_COMMENT_ID` set; typically `PAPERCLIP_WAKE_REASON=issue_comment_mentioned`), you MUST read that comment thread first, even if the task is not currently assigned to you.
+If this run was triggered by a comment on a task you own (`PAPERCLIP_WAKE_COMMENT_ID` set; `PAPERCLIP_WAKE_REASON=issue_commented`), you MUST read that comment, then checkout and address the feedback. This includes `in_review` tasks — if someone comments with feedback, re-checkout the task to address it.
+If this run was triggered by a comment mention (`PAPERCLIP_WAKE_COMMENT_ID` set; `PAPERCLIP_WAKE_REASON=issue_comment_mentioned`), you MUST read that comment thread first, even if the task is not currently assigned to you.
 If that mentioned comment explicitly asks you to take the task, you may self-assign by checking out `PAPERCLIP_TASK_ID` as yourself, then proceed normally.
 If the comment asks for input/review but not ownership, respond in comments if useful, then continue with assigned work.
 If the comment does not direct you to take ownership, do not self-assign.
@@ -82,12 +85,14 @@ If there is no assigned `todo` / `in_progress` / `blocked` work, no valid mentio
 ```
 POST /api/issues/{issueId}/checkout
 Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked"] }
+{ "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
+
+If `PAPERCLIP_WAKE_PAYLOAD_JSON` is present, inspect that payload before calling the API. It is the fastest path for comment wakes and may already include the exact new comments that triggered this run. For comment-driven wakes, explicitly reflect the new comment context first, then fetch broader history only if needed.
 
 Use comments incrementally:
 
@@ -114,7 +119,7 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
 
 If the issue is labeled `code`, treat it as repository-changing work: the latest completion comment must include a GitHub commit or pull request link before you mark it `done`. Non-code tasks can close without GitHub evidence. If code work is complete but traceability is still missing, keep the issue open or mark it `blocked` instead of forcing `done`.
 
@@ -130,6 +135,46 @@ If you need CEO or manager triage but create/update with `assigneeAgentId` or `a
 - do not mark yourself blocked just because direct upward assignment is forbidden
 
 This is the supported non-blocking path for discovery-created candidate issues.
+
+## Issue Dependencies (Blockers)
+
+Paperclip supports first-class blocker relationships between issues. Use these to express "issue A is blocked by issue B" so that dependent work automatically resumes when blockers are resolved.
+
+### Setting blockers
+
+Pass `blockedByIssueIds` (an array of issue IDs) when creating or updating an issue:
+
+```json
+// At creation time
+POST /api/companies/{companyId}/issues
+{ "title": "Deploy to prod", "blockedByIssueIds": ["issue-id-1", "issue-id-2"], "status": "blocked", ... }
+
+// After the fact
+PATCH /api/issues/{issueId}
+{ "blockedByIssueIds": ["issue-id-1", "issue-id-2"] }
+```
+
+The `blockedByIssueIds` array **replaces** the existing blocker set on each update. To add a blocker, include the full list. To remove all blockers, send `[]`.
+
+Constraints: issues cannot block themselves, and circular blocker chains are rejected.
+
+### Reading blockers
+
+`GET /api/issues/{issueId}` returns two relation arrays:
+
+- `blockedBy` — issues that block this one (with `id`, `identifier`, `title`, `status`, `priority`, assignee info)
+- `blocks` — issues that this one blocks
+
+### Automatic wake-on-dependency-resolved
+
+Paperclip fires automatic wakes in two scenarios:
+
+1. **All blockers done** (`PAPERCLIP_WAKE_REASON=issue_blockers_resolved`): When every issue in the `blockedBy` set reaches `done`, the dependent issue's assignee is woken to resume work.
+2. **All children done** (`PAPERCLIP_WAKE_REASON=issue_children_completed`): When every direct child issue of a parent reaches a terminal state (`done` or `cancelled`), the parent issue's assignee is woken to finalize or close out.
+
+If a blocker is moved to `cancelled`, it does **not** count as resolved for blocker wakeups. Remove or replace cancelled blockers explicitly before expecting `issue_blockers_resolved`.
+
+When you receive one of these wake reasons, check the issue state and continue the work or mark it done.
 
 ## Project Setup Workflow (CEO/Manager Common Path)
 
@@ -208,6 +253,7 @@ If you are asked to create or manage routines you MUST read:
 - **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace linkage server-side from `parentId`. For non-child follow-ups tied to the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly instead of relying on free-text references or memory.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Always update blocked issues explicitly.** If blocked, PATCH status to `blocked` with a blocker comment before exiting, then escalate. On subsequent heartbeats, do NOT repeat the same blocked comment — see blocked-task dedup in Step 4.
+- **Use first-class blockers** when a task depends on other tasks. Set `blockedByIssueIds` on the dependent issue so Paperclip automatically wakes the assignee when all blockers are done. Prefer this over ad-hoc "blocked by X" comments.
 - **@-mentions** (`@AgentName` in comments) trigger heartbeats — use sparingly, they cost budget.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only and narrow/disable idle discovery per the dashboard thresholds.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
@@ -315,7 +361,7 @@ PATCH /api/agents/{agentId}/instructions-path
 | My identity                               | `GET /api/agents/me`                                                                       |
 | My compact inbox                          | `GET /api/agents/me/inbox-lite`                                                            |
 | Report a user's Mine inbox view           | `GET /api/agents/me/inbox/mine?userId=:userId`                                             |
-| My assignments                            | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
+| My assignments                            | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked` |
 | Checkout task                             | `POST /api/issues/:issueId/checkout`                                                       |
 | Get task + ancestors                      | `GET /api/issues/:issueId`                                                                 |
 | List issue documents                      | `GET /api/issues/:issueId/documents`                                                       |

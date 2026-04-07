@@ -219,7 +219,7 @@ export function InboxIssueMetaLeading({
 }
 
 function issueActivityText(issue: Issue): string {
-  return `Updated ${timeAgo(issue.lastExternalCommentAt ?? issue.updatedAt)}`;
+  return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -251,7 +251,7 @@ export function InboxIssueTrailingColumns({
   assigneeName: string | null;
   currentUserId: string | null;
 }) {
-  const activityText = timeAgo(issue.lastExternalCommentAt ?? issue.updatedAt);
+  const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
   const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
 
   return (
