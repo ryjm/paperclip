@@ -62,6 +62,11 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const TERMINAL_ISSUE_ASSIGNMENT_WAKE_REASONS = new Set([
+  "issue_assigned",
+  "issue_execution_promoted",
+]);
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -603,6 +608,16 @@ function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
 
 function isSameTaskScope(left: string | null, right: string | null) {
   return (left ?? null) === (right ?? null);
+}
+
+function isTerminalIssueStatus(status: string | null | undefined) {
+  return typeof status === "string" && TERMINAL_ISSUE_STATUSES.has(status);
+}
+
+function shouldSuppressQueuedWakeForTerminalIssue(
+  wakeReason: string | null | undefined,
+) {
+  return typeof wakeReason === "string" && TERMINAL_ISSUE_ASSIGNMENT_WAKE_REASONS.has(wakeReason);
 }
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {
@@ -1624,15 +1639,44 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function cancelQueuedRunBeforeClaim(
+    run: typeof heartbeatRuns.$inferSelect,
+    reason: string,
+  ) {
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: new Date(),
+      error: reason,
+      errorCode: "cancelled",
+    });
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: new Date(),
+      error: reason,
+    });
+
+    if (cancelled) {
+      await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "run cancelled",
+      });
+      await releaseIssueExecutionAndPromote(cancelled);
+    }
+
+    runningProcesses.delete(run.id);
+    await finalizeAgentStatus(run.agentId, "cancelled");
+    return cancelled;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      await cancelQueuedRunBeforeClaim(run, "Cancelled because the agent no longer exists");
       return null;
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+      await cancelQueuedRunBeforeClaim(run, "Cancelled because the agent is not invokable");
       return null;
     }
 
@@ -1642,8 +1686,26 @@ export function heartbeatService(db: Db) {
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
+      await cancelQueuedRunBeforeClaim(run, budgetBlock.reason);
       return null;
+    }
+
+    const issueId = readNonEmptyString(context.issueId);
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    if (issueId && shouldSuppressQueuedWakeForTerminalIssue(wakeReason)) {
+      const issue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) {
+        await cancelQueuedRunBeforeClaim(run, "Cancelled because the issue no longer exists");
+        return null;
+      }
+      if (isTerminalIssueStatus(issue.status)) {
+        await cancelQueuedRunBeforeClaim(run, `Cancelled because the issue is ${issue.status}`);
+        return null;
+      }
     }
 
     const claimedAt = new Date();
@@ -2806,6 +2868,7 @@ export function heartbeatService(db: Db) {
         .select({
           id: issues.id,
           companyId: issues.companyId,
+          status: issues.status,
         })
         .from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
@@ -2822,6 +2885,25 @@ export function heartbeatService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
+
+      if (isTerminalIssueStatus(issue.status)) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(),
+            error: `Cancelled because the issue is ${issue.status}`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+        return null;
+      }
 
       while (true) {
         const deferred = await tx
@@ -2991,12 +3073,32 @@ export function heartbeatService(db: Db) {
     };
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
+    const wakeReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason;
+    let issueStatus: string | null = null;
     if (!projectId && issueId) {
-      projectId = await db
-        .select({ projectId: issues.projectId })
+      const issue = await db
+        .select({ projectId: issues.projectId, status: issues.status })
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-        .then((rows) => rows[0]?.projectId ?? null);
+        .then((rows) => rows[0] ?? null);
+      projectId = issue?.projectId ?? null;
+      issueStatus = issue?.status ?? null;
+    } else if (issueId) {
+      issueStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+        .then((rows) => rows[0]?.status ?? null);
+    }
+
+    if (issueId && shouldSuppressQueuedWakeForTerminalIssue(wakeReason) && isTerminalIssueStatus(issueStatus)) {
+      await writeSkippedRequest("issue_assignment_terminal", {
+        ...(payload ?? {}),
+        issueId,
+        issueStatus,
+        suppressedWakeReason: wakeReason,
+      });
+      return null;
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
