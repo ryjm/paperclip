@@ -40,7 +40,7 @@ import {
   releaseRuntimeServicesForRun,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
-import { issueService } from "./issues.js";
+import { issueService, resolveDefaultProjectWorkspaceId } from "./issues.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
@@ -327,6 +327,17 @@ function readNonEmptyStringArray(value: unknown) {
     if (normalized) deduped.add(normalized);
   }
   return [...deduped];
+}
+
+export function hasExplicitWorkspaceSelectionForRun(input: {
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
+  defaultProjectWorkspaceId: string | null;
+}) {
+  if (input.executionWorkspaceId) return true;
+  if (!input.projectWorkspaceId) return false;
+  if (!input.defaultProjectWorkspaceId) return true;
+  return input.projectWorkspaceId !== input.defaultProjectWorkspaceId;
 }
 
 export function resolveWorkspaceProjectTargetForRun(input: {
@@ -1505,14 +1516,19 @@ export function heartbeatService(db: Db) {
           .then((rows) => rows[0] ?? null)
       : null;
     const issueProjectId = issueProjectRef?.projectId ?? null;
+    const defaultIssueProjectWorkspaceId = issueProjectId
+      ? await resolveDefaultProjectWorkspaceId(db, agent.companyId, issueProjectId)
+      : null;
     const workspaceProjectTarget = resolveWorkspaceProjectTargetForRun({
       issueId,
       issueProjectId,
       contextProjectId,
       mentionedProjectIds: issueId ? await issuesSvc.findMentionedProjectIds(issueId) : [],
-      hasExplicitWorkspaceSelection: Boolean(
-        issueProjectRef?.projectWorkspaceId || issueProjectRef?.executionWorkspaceId,
-      ),
+      hasExplicitWorkspaceSelection: hasExplicitWorkspaceSelectionForRun({
+        projectWorkspaceId: issueProjectRef?.projectWorkspaceId ?? null,
+        executionWorkspaceId: issueProjectRef?.executionWorkspaceId ?? null,
+        defaultProjectWorkspaceId: defaultIssueProjectWorkspaceId,
+      }),
     });
     const preferredProjectWorkspaceId =
       issueId ? issueProjectRef?.projectWorkspaceId ?? null : contextProjectWorkspaceId;

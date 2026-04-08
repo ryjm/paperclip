@@ -8,6 +8,7 @@ import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   buildExplicitResumeSessionOverride,
   formatRuntimeWorkspaceWarningLog,
+  hasExplicitWorkspaceSelectionForRun,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   recoverProjectWorkspaceFromManifest,
@@ -292,6 +293,38 @@ describe("recoverProjectWorkspaceFromManifest", () => {
     } finally {
       await fs.rm(tempHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe("hasExplicitWorkspaceSelectionForRun", () => {
+  it("treats the default project workspace assignment as implicit", () => {
+    expect(
+      hasExplicitWorkspaceSelectionForRun({
+        projectWorkspaceId: "workspace-default",
+        executionWorkspaceId: null,
+        defaultProjectWorkspaceId: "workspace-default",
+      }),
+    ).toBe(false);
+  });
+
+  it("treats non-default project workspace selections as explicit", () => {
+    expect(
+      hasExplicitWorkspaceSelectionForRun({
+        projectWorkspaceId: "workspace-override",
+        executionWorkspaceId: null,
+        defaultProjectWorkspaceId: "workspace-default",
+      }),
+    ).toBe(true);
+  });
+
+  it("treats execution workspace selections as explicit", () => {
+    expect(
+      hasExplicitWorkspaceSelectionForRun({
+        projectWorkspaceId: "workspace-default",
+        executionWorkspaceId: "execution-1",
+        defaultProjectWorkspaceId: "workspace-default",
+      }),
+    ).toBe(true);
   });
 });
 
