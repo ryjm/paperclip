@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import detectPort from "detect-port";
 import EmbeddedPostgres from "embedded-postgres";
+import { eq } from "drizzle-orm";
 import {
   agents,
   applyPendingMigrations,
@@ -18,6 +19,7 @@ import {
   projectWorkspaces,
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 
 const CAPTURE_KEYS = [
   "PAPERCLIP_AGENT_ID",
@@ -315,18 +317,40 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
 
   async function seedIssue(
     agentId: string,
-    opts?: { projectId?: string | null; projectWorkspaceId?: string | null },
+    opts?: {
+      title?: string;
+      description?: string | null;
+      projectId?: string | null;
+      projectWorkspaceId?: string | null;
+      useServiceCreate?: boolean;
+    },
   ) {
-    const issueId = randomUUID();
     const currentIssueNumber = issueNumber;
     issueNumber += 1;
+    const title = opts?.title ?? `Wake Issue ${currentIssueNumber}`;
+
+    if (opts?.useServiceCreate) {
+      const created = await issueService(db).create(companyId, {
+        title,
+        description: opts.description ?? null,
+        status: "todo",
+        priority: "high",
+        projectId: opts.projectId ?? null,
+        assigneeAgentId: agentId,
+        createdByAgentId: agentId,
+      });
+      return created.id;
+    }
+
+    const issueId = randomUUID();
 
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: `Wake Issue ${currentIssueNumber}`,
+      title,
       status: "todo",
       priority: "high",
+      description: opts?.description ?? null,
       projectId: opts?.projectId ?? null,
       projectWorkspaceId: opts?.projectWorkspaceId ?? null,
       assigneeAgentId: agentId,
@@ -334,6 +358,10 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       issueNumber: currentIssueNumber,
       identifier: `HBT-${currentIssueNumber}`,
     });
+    await db
+      .update(companies)
+      .set({ issueCounter: currentIssueNumber })
+      .where(eq(companies.id, companyId));
 
     return issueId;
   }
@@ -355,6 +383,16 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
     projectWorkspace?: {
       cwd: string;
       repoRef?: string | null;
+    };
+    mentionedProjectWorkspace?: {
+      cwd: string;
+      repoRef?: string | null;
+    };
+    issue?: {
+      title?: string;
+      description?: string | null;
+      mentionMentionedProject?: boolean;
+      useServiceCreate?: boolean;
     };
   }) {
     const root = await mkdtemp(join(tmpdir(), `paperclip-${input.adapterType}-wake-`));
@@ -402,6 +440,9 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         companyId,
         name: `Workspace Project ${projectId.slice(0, 8)}`,
         status: "active",
+        executionWorkspacePolicy: {
+          defaultProjectWorkspaceId: projectWorkspaceId,
+        },
       });
       await db.insert(projectWorkspaces).values({
         id: projectWorkspaceId,
@@ -414,10 +455,43 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         isPrimary: true,
       });
     }
+    let mentionedProjectId: string | null = null;
+    let mentionedProjectWorkspaceId: string | null = null;
+    if (input.mentionedProjectWorkspace) {
+      mentionedProjectId = randomUUID();
+      mentionedProjectWorkspaceId = randomUUID();
+      await db.insert(projects).values({
+        id: mentionedProjectId,
+        companyId,
+        name: `Mentioned Project ${mentionedProjectId.slice(0, 8)}`,
+        status: "active",
+        executionWorkspacePolicy: {
+          defaultProjectWorkspaceId: mentionedProjectWorkspaceId,
+        },
+      });
+      await db.insert(projectWorkspaces).values({
+        id: mentionedProjectWorkspaceId,
+        companyId,
+        projectId: mentionedProjectId,
+        name: "Mentioned Workspace",
+        sourceType: "local_path",
+        cwd: input.mentionedProjectWorkspace.cwd,
+        repoRef: input.mentionedProjectWorkspace.repoRef ?? null,
+        isPrimary: true,
+      });
+    }
     if (input.wake.source !== "timer") {
+      const issueDescription =
+        input.issue?.description ??
+        (input.issue?.mentionMentionedProject && mentionedProjectId
+          ? `Route this work to [Mentioned Project](project://${mentionedProjectId}).`
+          : null);
       issueId = await seedIssue(agentId, {
+        title: input.issue?.title,
+        description: issueDescription,
         projectId,
         projectWorkspaceId,
+        useServiceCreate: input.issue?.useServiceCreate,
       });
     }
 
@@ -448,7 +522,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
         expect(wakeup).not.toBeNull();
         const run = await waitForRun(heartbeat(), wakeup!.id);
         const capture = JSON.parse(await readFile(capturePath, "utf8")) as CapturePayload;
-        return { capture, run, issueId };
+        return { capture, run, issueId, projectId, projectWorkspaceId, mentionedProjectId, mentionedProjectWorkspaceId };
       });
     } finally {
       if (input.adapterType === "codex_local") {
@@ -560,4 +634,53 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       });
     });
   }
+
+  it("updates issue project workspace metadata when a wake reroutes the issue to a mentioned project", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-reroute-project-workspace-"));
+    const sourceWorkspace = join(root, "source-workspace");
+    const mentionedWorkspace = join(root, "mentioned-workspace");
+    await mkdir(sourceWorkspace, { recursive: true });
+    await mkdir(mentionedWorkspace, { recursive: true });
+
+    try {
+      const { capture, run, issueId, mentionedProjectId, mentionedProjectWorkspaceId } = await runWakeCase({
+        adapterType: "codex_local",
+        wake: {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+        },
+        projectWorkspace: {
+          cwd: sourceWorkspace,
+        },
+        mentionedProjectWorkspace: {
+          cwd: mentionedWorkspace,
+        },
+        issue: {
+          useServiceCreate: true,
+          mentionMentionedProject: true,
+          title: "Reroute this issue to the mentioned project",
+        },
+      });
+
+      expect(run.status).toBe("succeeded");
+      expect(capture.env.PAPERCLIP_WORKSPACE_CWD).toBe(mentionedWorkspace);
+
+      const persistedIssue = await db
+        .select({
+          projectId: issues.projectId,
+          projectWorkspaceId: issues.projectWorkspaceId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId!))
+        .then((rows) => rows[0] ?? null);
+
+      expect(persistedIssue).toEqual({
+        projectId: mentionedProjectId,
+        projectWorkspaceId: mentionedProjectWorkspaceId,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

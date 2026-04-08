@@ -75,6 +75,31 @@ function clearCheckoutAndExecutionLockFields(
   return clearExecutionLockFields(patch);
 }
 
+export async function resolveDefaultProjectWorkspaceId(
+  db: Pick<Db, "select">,
+  companyId: string,
+  projectId: string,
+): Promise<string | null> {
+  const project = await db
+    .select({
+      executionWorkspacePolicy: projects.executionWorkspacePolicy,
+    })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
+  const defaultProjectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
+  if (defaultProjectWorkspaceId) {
+    return defaultProjectWorkspaceId;
+  }
+  return await db
+    .select({ id: projectWorkspaces.id })
+    .from(projectWorkspaces)
+    .where(and(eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.companyId, companyId)))
+    .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+    .then((rows) => rows[0]?.id ?? null);
+}
+
 export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
@@ -843,23 +868,7 @@ export function issueService(db: Db) {
         }
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         if (!projectWorkspaceId && issueData.projectId) {
-          const project = await tx
-            .select({
-              executionWorkspacePolicy: projects.executionWorkspacePolicy,
-            })
-            .from(projects)
-            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
-          const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
-          projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
-          if (!projectWorkspaceId) {
-            projectWorkspaceId = await tx
-              .select({ id: projectWorkspaces.id })
-              .from(projectWorkspaces)
-              .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
-              .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
-              .then((rows) => rows[0]?.id ?? null);
-          }
+          projectWorkspaceId = await resolveDefaultProjectWorkspaceId(tx, companyId, issueData.projectId);
         }
         const [company] = await tx
           .update(companies)

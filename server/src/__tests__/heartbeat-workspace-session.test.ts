@@ -8,9 +8,11 @@ import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   buildExplicitResumeSessionOverride,
   formatRuntimeWorkspaceWarningLog,
+  hasExplicitWorkspaceSelectionForRun,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   recoverProjectWorkspaceFromManifest,
+  resolveWorkspaceProjectTargetForRun,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -291,6 +293,100 @@ describe("recoverProjectWorkspaceFromManifest", () => {
     } finally {
       await fs.rm(tempHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe("hasExplicitWorkspaceSelectionForRun", () => {
+  it("treats the default project workspace assignment as implicit", () => {
+    expect(
+      hasExplicitWorkspaceSelectionForRun({
+        projectWorkspaceId: "workspace-default",
+        executionWorkspaceId: null,
+        defaultProjectWorkspaceId: "workspace-default",
+      }),
+    ).toBe(false);
+  });
+
+  it("treats non-default project workspace selections as explicit", () => {
+    expect(
+      hasExplicitWorkspaceSelectionForRun({
+        projectWorkspaceId: "workspace-override",
+        executionWorkspaceId: null,
+        defaultProjectWorkspaceId: "workspace-default",
+      }),
+    ).toBe(true);
+  });
+
+  it("treats execution workspace selections as explicit", () => {
+    expect(
+      hasExplicitWorkspaceSelectionForRun({
+        projectWorkspaceId: "workspace-default",
+        executionWorkspaceId: "execution-1",
+        defaultProjectWorkspaceId: "workspace-default",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("resolveWorkspaceProjectTargetForRun", () => {
+  it("routes issue runs to a uniquely mentioned project even when the assigned project differs", () => {
+    const result = resolveWorkspaceProjectTargetForRun({
+      issueId: "issue-1",
+      issueProjectId: "project-tabula",
+      contextProjectId: "project-tabula",
+      mentionedProjectIds: ["project-paperclip"],
+      hasExplicitWorkspaceSelection: false,
+    });
+
+    expect(result.projectId).toBe("project-paperclip");
+    expect(result.warnings).toEqual([
+      'Routing this issue to mentioned project "project-paperclip" instead of assigned project "project-tabula".',
+    ]);
+  });
+
+  it("keeps the assigned project when the issue already has an explicit workspace selection", () => {
+    const result = resolveWorkspaceProjectTargetForRun({
+      issueId: "issue-1",
+      issueProjectId: "project-tabula",
+      contextProjectId: "project-tabula",
+      mentionedProjectIds: ["project-paperclip"],
+      hasExplicitWorkspaceSelection: true,
+    });
+
+    expect(result).toEqual({
+      projectId: "project-tabula",
+      warnings: [],
+    });
+  });
+
+  it("ignores inherited context projects for issue runs without a unique project target", () => {
+    const result = resolveWorkspaceProjectTargetForRun({
+      issueId: "issue-1",
+      issueProjectId: null,
+      contextProjectId: "project-agent-default",
+      mentionedProjectIds: [],
+      hasExplicitWorkspaceSelection: false,
+    });
+
+    expect(result.projectId).toBeNull();
+    expect(result.warnings).toEqual([
+      'Ignoring inherited context project "project-agent-default" because this issue does not identify a unique workspace target.',
+    ]);
+  });
+
+  it("still uses context projects for non-issue runs", () => {
+    expect(
+      resolveWorkspaceProjectTargetForRun({
+        issueId: null,
+        issueProjectId: null,
+        contextProjectId: "project-manual",
+        mentionedProjectIds: [],
+        hasExplicitWorkspaceSelection: false,
+      }),
+    ).toEqual({
+      projectId: "project-manual",
+      warnings: [],
+    });
   });
 });
 

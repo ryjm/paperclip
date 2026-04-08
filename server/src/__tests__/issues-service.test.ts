@@ -15,6 +15,8 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  projectWorkspaces,
+  projects,
 } from "@paperclipai/db";
 import { issueService } from "../services/issues.ts";
 
@@ -150,6 +152,8 @@ describe("issueService.list participantAgentId", () => {
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -331,7 +335,6 @@ describe("issueService.list participantAgentId", () => {
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
-
   it("reconciles stale execution locks in list results before building inbox data", async () => {
     const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
     const staleRunId = randomUUID();
@@ -526,5 +529,49 @@ describe("issueService.list participantAgentId", () => {
       executionRunId: null,
       executionLockedAt: null,
     });
+  });
+
+  it("assigns the default project workspace when creating a project-backed issue without an explicit workspace", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace Routing",
+      status: "active",
+      executionWorkspacePolicy: {
+        defaultProjectWorkspaceId: projectWorkspaceId,
+      },
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary Workspace",
+      sourceType: "local_path",
+      cwd: `/tmp/${projectWorkspaceId}`,
+      repoRef: null,
+      isPrimary: true,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Route workspace from mentioned project",
+      status: "todo",
+      priority: "medium",
+      projectId,
+    });
+
+    expect(created.projectId).toBe(projectId);
+    expect(created.projectWorkspaceId).toBe(projectWorkspaceId);
   });
 });

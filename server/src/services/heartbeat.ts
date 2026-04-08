@@ -40,7 +40,7 @@ import {
   releaseRuntimeServicesForRun,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
-import { issueService } from "./issues.js";
+import { issueService, resolveDefaultProjectWorkspaceId } from "./issues.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
@@ -327,6 +327,70 @@ function readNonEmptyStringArray(value: unknown) {
     if (normalized) deduped.add(normalized);
   }
   return [...deduped];
+}
+
+export function hasExplicitWorkspaceSelectionForRun(input: {
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
+  defaultProjectWorkspaceId: string | null;
+}) {
+  if (input.executionWorkspaceId) return true;
+  if (!input.projectWorkspaceId) return false;
+  if (!input.defaultProjectWorkspaceId) return true;
+  return input.projectWorkspaceId !== input.defaultProjectWorkspaceId;
+}
+
+export function resolveWorkspaceProjectTargetForRun(input: {
+  issueId: string | null;
+  issueProjectId: string | null;
+  contextProjectId: string | null;
+  mentionedProjectIds: string[];
+  hasExplicitWorkspaceSelection: boolean;
+}) {
+  const mentionedProjectIds = readNonEmptyStringArray(input.mentionedProjectIds);
+  const uniqueMentionedProjectId = mentionedProjectIds.length === 1 ? mentionedProjectIds[0]! : null;
+  const warnings: string[] = [];
+
+  if (!input.issueId) {
+    return {
+      projectId: input.contextProjectId ?? uniqueMentionedProjectId ?? null,
+      warnings,
+    };
+  }
+
+  if (!input.hasExplicitWorkspaceSelection && uniqueMentionedProjectId) {
+    if (input.issueProjectId && uniqueMentionedProjectId !== input.issueProjectId) {
+      warnings.push(
+        `Routing this issue to mentioned project "${uniqueMentionedProjectId}" instead of assigned project "${input.issueProjectId}".`,
+      );
+    }
+    return {
+      projectId: uniqueMentionedProjectId,
+      warnings,
+    };
+  }
+
+  if (input.issueProjectId) {
+    return {
+      projectId: input.issueProjectId,
+      warnings,
+    };
+  }
+
+  if (mentionedProjectIds.length > 1) {
+    warnings.push(
+      `Issue thread references multiple structured project mentions (${mentionedProjectIds.join(", ")}); no unique workspace target could be selected.`,
+    );
+  }
+  if (input.contextProjectId) {
+    warnings.push(
+      `Ignoring inherited context project "${input.contextProjectId}" because this issue does not identify a unique workspace target.`,
+    );
+  }
+  return {
+    projectId: null,
+    warnings,
+  };
 }
 
 function deriveProcessLossRetryContext(
@@ -1445,15 +1509,30 @@ export function heartbeatService(db: Db) {
           .select({
             projectId: issues.projectId,
             projectWorkspaceId: issues.projectWorkspaceId,
+            executionWorkspaceId: issues.executionWorkspaceId,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
     const issueProjectId = issueProjectRef?.projectId ?? null;
+    const defaultIssueProjectWorkspaceId = issueProjectId
+      ? await resolveDefaultProjectWorkspaceId(db, agent.companyId, issueProjectId)
+      : null;
+    const workspaceProjectTarget = resolveWorkspaceProjectTargetForRun({
+      issueId,
+      issueProjectId,
+      contextProjectId,
+      mentionedProjectIds: issueId ? await issuesSvc.findMentionedProjectIds(issueId) : [],
+      hasExplicitWorkspaceSelection: hasExplicitWorkspaceSelectionForRun({
+        projectWorkspaceId: issueProjectRef?.projectWorkspaceId ?? null,
+        executionWorkspaceId: issueProjectRef?.executionWorkspaceId ?? null,
+        defaultProjectWorkspaceId: defaultIssueProjectWorkspaceId,
+      }),
+    });
     const preferredProjectWorkspaceId =
-      issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
-    const resolvedProjectId = issueProjectId ?? contextProjectId;
+      issueId ? issueProjectRef?.projectWorkspaceId ?? null : contextProjectWorkspaceId;
+    const resolvedProjectId = workspaceProjectTarget.projectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
 
@@ -1521,7 +1600,7 @@ export function heartbeatService(db: Db) {
             repoUrl: workspace.repoUrl,
             repoRef: workspace.repoRef,
             workspaceHints,
-            warnings: [preferredWorkspaceWarning, managedWorkspaceWarning].filter(
+            warnings: [...workspaceProjectTarget.warnings, preferredWorkspaceWarning, managedWorkspaceWarning].filter(
               (value): value is string => Boolean(value),
             ),
           };
@@ -1567,6 +1646,7 @@ export function heartbeatService(db: Db) {
           repoRef: recoveredWorkspace.repoRef,
           workspaceHints: recoveredHints,
           warnings: [
+            ...workspaceProjectTarget.warnings,
             `${recoveryPrefix} Recovered managed workspace "${recoveredWorkspace.cwd}" from manifest "${recoveredWorkspace.manifestPath}" for this run.`,
           ],
         };
@@ -1599,7 +1679,7 @@ export function heartbeatService(db: Db) {
         repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
         repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
         workspaceHints,
-        warnings,
+        warnings: [...workspaceProjectTarget.warnings, ...warnings],
       };
     }
 
@@ -1617,7 +1697,7 @@ export function heartbeatService(db: Db) {
         repoUrl: null,
         repoRef: null,
         workspaceHints,
-        warnings: managedWorkspace.warning ? [managedWorkspace.warning] : [],
+        warnings: [...workspaceProjectTarget.warnings, ...(managedWorkspace.warning ? [managedWorkspace.warning] : [])],
       };
     }
 
@@ -1665,7 +1745,7 @@ export function heartbeatService(db: Db) {
       repoUrl: null,
       repoRef: null,
       workspaceHints,
-      warnings,
+      warnings: [...workspaceProjectTarget.warnings, ...warnings],
     };
   }
 
@@ -2583,7 +2663,14 @@ export function heartbeatService(db: Db) {
       recorder: workspaceOperationRecorder,
     });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
-    const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
+    const issueWorkspaceMatchesResolvedProject =
+      issueRef?.projectWorkspaceId != null &&
+      issueRef?.projectId != null &&
+      resolvedProjectId != null &&
+      issueRef.projectId === resolvedProjectId;
+    const resolvedProjectWorkspaceId = issueWorkspaceMatchesResolvedProject
+      ? issueRef!.projectWorkspaceId
+      : resolvedWorkspace.workspaceId ?? null;
     const shouldReuseExisting =
       issueRef?.executionWorkspacePreference === "reuse_existing" &&
       existingExecutionWorkspace &&
@@ -2697,10 +2784,13 @@ export function heartbeatService(db: Db) {
         executionWorkspaceMode === "isolated_workspace" ||
         executionWorkspaceMode === "operator_branch";
       const nextIssuePatch: Record<string, unknown> = {};
+      if (resolvedProjectId && issueRef?.projectId !== resolvedProjectId) {
+        nextIssuePatch.projectId = resolvedProjectId;
+      }
       if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
         nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
       }
-      if (resolvedProjectWorkspaceId && issueRef?.projectWorkspaceId !== resolvedProjectWorkspaceId) {
+      if (issueRef?.projectWorkspaceId !== resolvedProjectWorkspaceId) {
         nextIssuePatch.projectWorkspaceId = resolvedProjectWorkspaceId;
       }
       if (shouldSwitchIssueToExistingWorkspace) {
@@ -2716,6 +2806,9 @@ export function heartbeatService(db: Db) {
     }
     if (persistedExecutionWorkspace) {
       context.executionWorkspaceId = persistedExecutionWorkspace.id;
+      if (executionWorkspace.projectId) {
+        context.projectId = executionWorkspace.projectId;
+      }
       await db
         .update(heartbeatRuns)
         .set({
