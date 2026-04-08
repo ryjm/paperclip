@@ -335,8 +335,6 @@ describe("issueService.list participantAgentId", () => {
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
-
-<<<<<<< HEAD
   it("reconciles stale execution locks in list results before building inbox data", async () => {
     const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
     const staleRunId = randomUUID();
