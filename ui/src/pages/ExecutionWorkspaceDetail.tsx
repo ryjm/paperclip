@@ -500,29 +500,15 @@ export function ExecutionWorkspaceDetail() {
           </StatusPill>
         </div>
 
-        <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
-          <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-            <div className="min-w-0 space-y-2">
-              <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                Execution workspace
-              </div>
-              <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
-              <p className="max-w-2xl text-sm text-muted-foreground">
-                Configure the concrete runtime workspace that Paperclip reuses for this issue flow.
-                <span className="hidden sm:inline"> These settings stay attached to the execution workspace so future runs can keep local paths, repo refs, provisioning, teardown, and runtime-service behavior in sync with the actual workspace being reused.</span>
-              </p>
-            </div>
-            <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
-              <Button
-                variant="outline"
-                className="w-full sm:w-auto"
-                onClick={() => setCloseDialogOpen(true)}
-                disabled={workspace.status === "archived"}
-              >
-                {workspace.status === "cleanup_failed" ? "Retry close" : "Close workspace"}
-              </Button>
-            </div>
+        <div className="space-y-2">
+          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            Execution workspace
           </div>
+          <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
+          <p className="max-w-2xl text-sm text-muted-foreground">
+            Configure the concrete runtime workspace that Paperclip reuses for this issue flow.
+            <span className="hidden sm:inline"> These settings stay attached to the execution workspace so future runs can keep local paths, repo refs, provisioning, teardown, and runtime-service behavior in sync with the actual workspace being reused.</span>
+          </p>
         </div>
 
         <Tabs value={activeTab ?? "configuration"} onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}>
@@ -541,14 +527,24 @@ export function ExecutionWorkspaceDetail() {
           <div className="grid gap-4 sm:gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.95fr)]">
             <div className="min-w-0 space-y-4 sm:space-y-6">
               <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
-                <div className="space-y-1">
-                  <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                    Configuration
+                <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                      Configuration
+                    </div>
+                    <h2 className="text-lg font-semibold">Workspace settings</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace.
+                    </p>
                   </div>
-                  <h2 className="text-lg font-semibold">Workspace settings</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace.
-                  </p>
+                  <Button
+                    variant="outline"
+                    className="w-full sm:w-auto"
+                    onClick={() => setCloseDialogOpen(true)}
+                    disabled={workspace.status === "archived"}
+                  >
+                    {workspace.status === "cleanup_failed" ? "Retry close" : "Close workspace"}
+                  </Button>
                 </div>
 
                 <Separator className="my-5" />
