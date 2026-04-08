@@ -2663,7 +2663,14 @@ export function heartbeatService(db: Db) {
       recorder: workspaceOperationRecorder,
     });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
-    const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
+    const issueWorkspaceMatchesResolvedProject =
+      issueRef?.projectWorkspaceId != null &&
+      issueRef?.projectId != null &&
+      resolvedProjectId != null &&
+      issueRef.projectId === resolvedProjectId;
+    const resolvedProjectWorkspaceId = issueWorkspaceMatchesResolvedProject
+      ? issueRef!.projectWorkspaceId
+      : resolvedWorkspace.workspaceId ?? null;
     const shouldReuseExisting =
       issueRef?.executionWorkspacePreference === "reuse_existing" &&
       existingExecutionWorkspace &&
@@ -2783,7 +2790,7 @@ export function heartbeatService(db: Db) {
       if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
         nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
       }
-      if (resolvedProjectWorkspaceId && issueRef?.projectWorkspaceId !== resolvedProjectWorkspaceId) {
+      if (issueRef?.projectWorkspaceId !== resolvedProjectWorkspaceId) {
         nextIssuePatch.projectWorkspaceId = resolvedProjectWorkspaceId;
       }
       if (shouldSwitchIssueToExistingWorkspace) {
