@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Example plugin: project sidebar Files link + project detail tab with workspace selector and file browser",
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0 <21 || >=24.0.0"
+  },
   "private": true,
   "exports": {
     ".": "./src/index.ts"

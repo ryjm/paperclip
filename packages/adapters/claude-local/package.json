@@ -12,6 +12,9 @@
     "directory": "packages/adapters/claude-local"
   },
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0 <21 || >=24.0.0"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server/index.ts",

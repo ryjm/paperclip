@@ -13,6 +13,9 @@
     "directory": "packages/plugins/sdk"
   },
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0 <21 || >=24.0.0"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
