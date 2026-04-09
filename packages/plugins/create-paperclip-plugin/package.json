@@ -12,6 +12,9 @@
     "directory": "packages/plugins/create-paperclip-plugin"
   },
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0 <21 || >=24.0.0"
+  },
   "bin": {
     "create-paperclip-plugin": "./dist/index.js"
   },

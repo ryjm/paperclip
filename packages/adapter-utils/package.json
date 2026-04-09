@@ -12,6 +12,9 @@
     "directory": "packages/adapter-utils"
   },
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0 <21 || >=24.0.0"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*.ts"

@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Reference plugin that demonstrates the full Paperclip plugin surface area in one package",
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0 <21 || >=24.0.0"
+  },
   "private": true,
   "exports": {
     ".": "./src/index.ts"

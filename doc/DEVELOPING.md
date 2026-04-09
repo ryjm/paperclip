@@ -12,8 +12,14 @@ Current implementation status:
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 20.19+ LTS or 24+
 - pnpm 9+
+
+The repo now enforces this earlier:
+
+- `pnpm install` hard-fails on unsupported Node via repo-local `engine-strict`
+- root `pnpm dev`, `pnpm build`, `pnpm test:run`, `pnpm paperclipai`, and related scripts stop immediately with a direct version-correction message
+- package-local commands such as `cd server && pnpm dev` and `cd ui && pnpm dev` hard-fail too because workspace manifests mirror the same `engines.node` range
 
 ## Dependency Lockfile Policy
 
@@ -22,6 +28,7 @@ GitHub Actions owns `pnpm-lock.yaml`.
 - Do not commit `pnpm-lock.yaml` in pull requests.
 - Pull request CI validates dependency resolution when manifests change.
 - Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
+- Repo-local support is aligned to the CI targets above: Node 20.19+ LTS and Node 24+. Odd-numbered releases like Node 21 are not supported local-dev targets.
 
 ## Start Dev
 

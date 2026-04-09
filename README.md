@@ -188,7 +188,7 @@ pnpm dev
 
 This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
 
-> **Requirements:** Node.js 20+, pnpm 9.15+
+> **Requirements:** Node.js 20.19+ LTS or 24+, pnpm 9.15+. `pnpm install` plus repo and package-local dev/build/test commands intentionally hard-fail on unsupported Node versions such as Node 21.
 
 <br/>
 
