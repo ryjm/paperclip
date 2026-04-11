@@ -98,6 +98,10 @@ function readRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function markIssueReadNoStore(res: Response) {
+  res.set("Cache-Control", "no-store");
+}
+
 function issueUpdateActivityKind(input: { hasFieldChanges: boolean; hasComment: boolean }) {
   if (input.hasComment) {
     return input.hasFieldChanges ? "comment_with_issue_changes" : "comment_only";
@@ -849,6 +853,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    markIssueReadNoStore(res);
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
@@ -888,6 +893,7 @@ export function issueRoutes(
       svc.listAttachments(issue.id),
     ]);
 
+    markIssueReadNoStore(res);
     res.json({
       issue: {
         id: issue.id,

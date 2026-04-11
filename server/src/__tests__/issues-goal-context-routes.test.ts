@@ -177,6 +177,7 @@ describe("issue goal context routes", () => {
     const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
 
     expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
     expect(res.body.goalId).toBe(projectGoal.id);
     expect(res.body.goal).toEqual(
       expect.objectContaining({
@@ -193,6 +194,7 @@ describe("issue goal context routes", () => {
     );
 
     expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
     expect(res.body.issue.goalId).toBe(projectGoal.id);
     expect(res.body.goal).toEqual(
       expect.objectContaining({
