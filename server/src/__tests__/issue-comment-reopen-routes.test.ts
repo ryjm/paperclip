@@ -498,7 +498,7 @@ describe("issue comment reopen routes", () => {
       ...patch,
     }));
 
-    const res = await request(createApp())
+    const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "in_review", comment: "Moving this forward with a status update comment." });
 

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ActivityEvent } from "@paperclipai/shared";
-import { extractIssueTimelineEvents } from "./issue-timeline-events";
+import {
+  extractIssueTimelineEvents,
+  formatIssueTimelineLead,
+  formatIssueTimelineStatusLabel,
+} from "./issue-timeline-events";
 
 describe("extractIssueTimelineEvents", () => {
   it("extracts and sorts status and assignee changes from issue updates", () => {
@@ -66,6 +70,8 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "user",
         actorId: "local-board",
+        commentSourced: false,
+        explicitStatusChange: false,
         statusChange: {
           from: "todo",
           to: "in_progress",
@@ -76,6 +82,8 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:02:00.000Z"),
         actorType: "user",
         actorId: "local-board",
+        commentSourced: false,
+        explicitStatusChange: false,
         assigneeChange: {
           from: {
             agentId: "agent-1",
@@ -118,6 +126,8 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "agent",
         actorId: "agent-1",
+        commentSourced: true,
+        explicitStatusChange: false,
         statusChange: {
           from: "done",
           to: "todo",
@@ -149,5 +159,36 @@ describe("extractIssueTimelineEvents", () => {
     ] satisfies ActivityEvent[]);
 
     expect(events).toEqual([]);
+  });
+
+  it("preserves comment-sourced explicit status-change attribution", () => {
+    const [event] = extractIssueTimelineEvents([
+      {
+        id: "evt-comment-status",
+        companyId: "company-1",
+        actorType: "user",
+        actorId: "local-board",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: "issue-1",
+        agentId: null,
+        runId: null,
+        createdAt: new Date("2026-03-31T12:05:00.000Z"),
+        details: {
+          source: "comment",
+          updateKind: "comment_with_issue_changes",
+          explicitStatusChange: true,
+          status: "done",
+          _previous: {
+            status: "in_progress",
+          },
+        },
+      },
+    ] satisfies ActivityEvent[]);
+
+    expect(event.commentSourced).toBe(true);
+    expect(event.explicitStatusChange).toBe(true);
+    expect(formatIssueTimelineLead(event, "task")).toBe("commented and updated this task");
+    expect(formatIssueTimelineStatusLabel(event)).toBe("Status requested");
   });
 });

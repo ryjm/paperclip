@@ -57,4 +57,28 @@ describe("activity formatting", () => {
     expect(formatActivityVerb("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers on");
     expect(formatIssueActivityAction("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers");
   });
+
+  it("distinguishes comment-only issue updates from field changes", () => {
+    const details = {
+      source: "comment",
+      updateKind: "comment_only",
+    };
+
+    expect(formatActivityVerb("issue.updated", details)).toBe("commented without changing issue fields on");
+    expect(formatIssueActivityAction("issue.updated", details)).toBe("commented without changing issue fields");
+  });
+
+  it("describes comment-sourced status transitions explicitly", () => {
+    const details = {
+      source: "comment",
+      updateKind: "comment_with_issue_changes",
+      status: "done",
+      _previous: {
+        status: "in_progress",
+      },
+    };
+
+    expect(formatActivityVerb("issue.updated", details)).toBe("commented and changed status from in progress to done on");
+    expect(formatIssueActivityAction("issue.updated", details)).toBe("commented and changed the status from in progress to done");
+  });
 });

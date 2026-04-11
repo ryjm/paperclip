@@ -42,6 +42,10 @@ import {
   type SegmentTiming,
 } from "../lib/issue-chat-messages";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
+import {
+  formatIssueTimelineLead,
+  formatIssueTimelineStatusLabel,
+} from "../lib/issue-timeline-events";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -1411,6 +1415,8 @@ function IssueChatSystemMessage() {
   const statusChange = typeof custom.statusChange === "object" && custom.statusChange
     ? custom.statusChange as { from: string | null; to: string | null }
     : null;
+  const commentSourced = custom.commentSourced === true;
+  const explicitStatusChange = custom.explicitStatusChange === true;
   const assigneeChange = typeof custom.assigneeChange === "object" && custom.assigneeChange
     ? custom.assigneeChange as {
         from: IssueTimelineAssignee;
@@ -1419,6 +1425,18 @@ function IssueChatSystemMessage() {
     : null;
 
   if (custom.kind === "event" && actorName) {
+    const timelineEvent: IssueTimelineEvent = {
+      id: typeof custom.eventId === "string" ? custom.eventId : message.id,
+      createdAt: message.createdAt,
+      actorType: actorType === "agent" || actorType === "user" || actorType === "system"
+        ? actorType
+        : "user",
+      actorId: actorId ?? "",
+      commentSourced,
+      explicitStatusChange,
+      statusChange: statusChange ?? undefined,
+      assigneeChange: assigneeChange ?? undefined,
+    };
     const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
     const isAgent = actorType === "agent";
     const agentIcon = isAgent && actorId ? agentMap?.get(actorId)?.icon : undefined;
@@ -1427,7 +1445,7 @@ function IssueChatSystemMessage() {
       <div className="min-w-0 space-y-1">
         <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
           <span className="font-medium text-foreground">{actorName}</span>
-          <span className="text-muted-foreground">updated this task</span>
+          <span className="text-muted-foreground">{formatIssueTimelineLead(timelineEvent, "task")}</span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
             className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -1439,7 +1457,7 @@ function IssueChatSystemMessage() {
         {statusChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Status
+              {formatIssueTimelineStatusLabel(timelineEvent)}
             </span>
             <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />

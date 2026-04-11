@@ -10,6 +10,10 @@ import type {
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
+import {
+  formatIssueTimelineLead,
+  formatIssueTimelineStatusLabel,
+} from "./issue-timeline-events";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import {
   summarizeNotice,
@@ -303,10 +307,10 @@ function createTimelineEventMessage(args: {
       ? "System"
       : (formatAssigneeUserLabel(event.actorId, currentUserId) ?? "Board");
 
-  const lines: string[] = [`${actorName} updated this issue`];
+  const lines: string[] = [`${actorName} ${formatIssueTimelineLead(event, "issue")}`];
   if (event.statusChange) {
     lines.push(
-      `Status: ${event.statusChange.from ?? "none"} -> ${event.statusChange.to ?? "none"}`,
+      `${formatIssueTimelineStatusLabel(event)}: ${event.statusChange.from ?? "none"} -> ${event.statusChange.to ?? "none"}`,
     );
   }
   if (event.assigneeChange) {
@@ -332,6 +336,8 @@ function createTimelineEventMessage(args: {
         actorName,
         actorType: event.actorType,
         actorId: event.actorId,
+        commentSourced: event.commentSourced ?? false,
+        explicitStatusChange: event.explicitStatusChange ?? false,
         statusChange: event.statusChange ?? null,
         assigneeChange: event.assigneeChange ?? null,
       },

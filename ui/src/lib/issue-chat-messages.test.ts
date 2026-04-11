@@ -254,6 +254,8 @@ describe("buildIssueChatMessages", () => {
         createdAt: new Date("2026-04-06T11:59:00.000Z"),
         actorType: "user",
         actorId: "user-1",
+        commentSourced: true,
+        explicitStatusChange: true,
         statusChange: {
           from: "done",
           to: "todo",
@@ -309,6 +311,10 @@ describe("buildIssueChatMessages", () => {
       "assistant:comment-2",
       "assistant:run-assistant:run-live-1",
     ]);
+    expect(messages[0]?.content).toContainEqual({
+      type: "text",
+      text: "You commented and updated this issue\nStatus requested: done -> todo",
+    });
 
     const liveRunMessage = messages.at(-1);
     expect(liveRunMessage).toMatchObject({

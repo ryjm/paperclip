@@ -10,6 +10,8 @@ export interface IssueTimelineEvent {
   createdAt: Date | string;
   actorType: ActivityEvent["actorType"];
   actorId: string;
+  commentSourced?: boolean;
+  explicitStatusChange?: boolean;
   statusChange?: {
     from: string | null;
     to: string | null;
@@ -64,6 +66,11 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
       createdAt: event.createdAt,
       actorType: event.actorType,
       actorId: event.actorId,
+      commentSourced:
+        details.source === "comment"
+        || details.updateKind === "comment_only"
+        || details.updateKind === "comment_with_issue_changes",
+      explicitStatusChange: details.explicitStatusChange === true,
     };
 
     if (hasOwn(details, "status")) {
@@ -102,4 +109,21 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
   }
 
   return sortTimelineEvents(events);
+}
+
+export function formatIssueTimelineLead(
+  event: IssueTimelineEvent,
+  noun: "issue" | "task" = "task",
+): string {
+  if (event.commentSourced) {
+    if (event.statusChange || event.assigneeChange) {
+      return `commented and updated this ${noun}`;
+    }
+    return `commented on this ${noun}`;
+  }
+  return `updated this ${noun}`;
+}
+
+export function formatIssueTimelineStatusLabel(event: IssueTimelineEvent): string {
+  return event.explicitStatusChange ? "Status requested" : "Status";
 }

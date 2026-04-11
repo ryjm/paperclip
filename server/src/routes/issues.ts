@@ -98,6 +98,13 @@ function readRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function issueUpdateActivityKind(input: { hasFieldChanges: boolean; hasComment: boolean }) {
+  if (input.hasComment) {
+    return input.hasFieldChanges ? "comment_with_issue_changes" : "comment_only";
+  }
+  return input.hasFieldChanges ? "issue_fields_changed" : "metadata_only";
+}
+
 export function shouldWakeAgentForComment(
   actor: CommentWakeActor,
   targetAgentId: string | null | undefined,
@@ -1754,6 +1761,7 @@ export function issueRoutes(
     }
 
     const hasFieldChanges = Object.keys(previous).length > 0;
+    const changedFields = Object.keys(previous).sort();
     const reopened =
       commentBody &&
       reopenRequested === true &&
@@ -1761,6 +1769,14 @@ export function issueRoutes(
       previous.status !== undefined &&
       issue.status === "todo";
     const reopenFromStatus = reopened ? existing.status : null;
+    const updateKind = issueUpdateActivityKind({
+      hasFieldChanges,
+      hasComment: Boolean(commentBody),
+    });
+    const explicitStatusChange =
+      req.body.status !== undefined &&
+      previous.status !== undefined &&
+      issue.status !== existing.status;
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -1773,7 +1789,10 @@ export function issueRoutes(
       details: {
         ...updateFields,
         identifier: issue.identifier,
+        updateKind,
+        changedFields,
         ...(commentBody ? { source: "comment" } : {}),
+        ...(explicitStatusChange ? { explicitStatusChange: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
         _previous: hasFieldChanges ? previous : undefined,
@@ -1886,6 +1905,9 @@ export function issueRoutes(
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
+          updateKind,
+          changedFields,
+          ...(explicitStatusChange ? { explicitStatusChange: true } : {}),
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
           ...(interruptedRunId ? { interruptedRunId } : {}),
           ...(hasFieldChanges ? { updated: true } : {}),

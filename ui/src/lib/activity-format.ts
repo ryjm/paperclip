@@ -147,43 +147,37 @@ function formatChangedEntityLabel(
   return `${labels.length} ${plural}`;
 }
 
-function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
-  if (!details) return null;
-  const previous = asRecord(details._previous) ?? {};
-  if (details.status !== undefined) {
-    const from = previous.status;
-    return from
-      ? `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)} on`
-      : `changed status to ${humanizeValue(details.status)} on`;
-  }
-  if (details.priority !== undefined) {
-    const from = previous.priority;
-    return from
-      ? `changed priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)} on`
-      : `changed priority to ${humanizeValue(details.priority)} on`;
-  }
-  return null;
+function isCommentSourcedIssueUpdate(details: ActivityDetails): boolean {
+  return details?.source === "comment" || details?.updateKind === "comment_only" || details?.updateKind === "comment_with_issue_changes";
 }
 
-function formatIssueUpdatedAction(details: ActivityDetails): string | null {
-  if (!details) return null;
+function collectIssueUpdateParts(details: ActivityDetails, mode: "verb" | "action"): string[] {
+  if (!details) return [];
   const previous = asRecord(details._previous) ?? {};
   const parts: string[] = [];
 
   if (details.status !== undefined) {
     const from = previous.status;
     parts.push(
-      from
-        ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
-        : `changed the status to ${humanizeValue(details.status)}`,
+      mode === "action"
+        ? from
+          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
+          : `changed the status to ${humanizeValue(details.status)}`
+        : from
+          ? `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
+          : `changed status to ${humanizeValue(details.status)}`,
     );
   }
   if (details.priority !== undefined) {
     const from = previous.priority;
     parts.push(
-      from
-        ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
-        : `changed the priority to ${humanizeValue(details.priority)}`,
+      mode === "action"
+        ? from
+          ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
+          : `changed the priority to ${humanizeValue(details.priority)}`
+        : from
+          ? `changed priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
+          : `changed priority to ${humanizeValue(details.priority)}`,
     );
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
@@ -192,7 +186,29 @@ function formatIssueUpdatedAction(details: ActivityDetails): string | null {
   if (details.title !== undefined) parts.push("updated the title");
   if (details.description !== undefined) parts.push("updated the description");
 
-  return parts.length > 0 ? parts.join(", ") : null;
+  return parts;
+}
+
+function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
+  if (!details) return null;
+  const parts = collectIssueUpdateParts(details, "verb");
+  if (parts.length > 0) {
+    const summary = parts.join(", ");
+    return isCommentSourcedIssueUpdate(details) ? `commented and ${summary} on` : `${summary} on`;
+  }
+  if (isCommentSourcedIssueUpdate(details)) return "commented without changing issue fields on";
+  return null;
+}
+
+function formatIssueUpdatedAction(details: ActivityDetails): string | null {
+  if (!details) return null;
+  const parts = collectIssueUpdateParts(details, "action");
+  if (parts.length > 0) {
+    const summary = parts.join(", ");
+    return isCommentSourcedIssueUpdate(details) ? `commented and ${summary}` : summary;
+  }
+  if (isCommentSourcedIssueUpdate(details)) return "commented without changing issue fields";
+  return null;
 }
 
 function formatStructuredIssueChange(input: {
