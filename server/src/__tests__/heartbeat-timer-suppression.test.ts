@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import detectPort from "detect-port";
 import EmbeddedPostgres from "embedded-postgres";
 import { asc, eq } from "drizzle-orm";
@@ -14,6 +14,7 @@ import {
   companies,
   createDb,
   ensurePostgresDatabase,
+  heartbeatRuns,
   issues,
 } from "@paperclipai/db";
 import {
@@ -160,6 +161,16 @@ describe("heartbeat timer suppression", () => {
     });
   }, 120_000);
 
+  beforeEach(async () => {
+    issueNumber = 1;
+
+    await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
+    await db.delete(issues).where(eq(issues.companyId, companyId));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    await db.delete(agents).where(eq(agents.companyId, companyId));
+  });
+
   afterAll(async () => {
     await db.$client.end({ timeout: 0 });
     await embeddedPostgres.stop();
@@ -219,6 +230,51 @@ describe("heartbeat timer suppression", () => {
 
     return issueId;
   }
+
+  it("suppresses repeated timer wake checks when the agent has no assigned work", async () => {
+    const agentId = await seedTimerAgent();
+
+    const first = await heartbeat().tickTimers(new Date("2026-03-23T12:00:30.000Z"));
+    const second = await heartbeat().tickTimers(new Date("2026-03-23T12:05:31.000Z"));
+    const third = await heartbeat().tickTimers(new Date("2026-03-23T12:10:31.000Z"));
+
+    expect(first).toMatchObject({
+      checked: 1,
+      enqueued: 0,
+      skipped: 1,
+    });
+    expect(second).toMatchObject({
+      checked: 1,
+      enqueued: 0,
+      skipped: 1,
+    });
+    expect(third).toMatchObject({
+      checked: 1,
+      enqueued: 0,
+      skipped: 1,
+    });
+
+    const [wakeups, runs] = await Promise.all([
+      db
+        .select({
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+        })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId))
+        .orderBy(asc(agentWakeupRequests.requestedAt)),
+      db
+        .select({
+          status: heartbeatRuns.status,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt)),
+    ]);
+
+    expect(wakeups).toEqual([]);
+    expect(runs).toEqual([]);
+  });
 
   it("skips timer wakeups when the inbox only contains unchanged blocked issues", async () => {
     const agentId = await seedTimerAgent();
