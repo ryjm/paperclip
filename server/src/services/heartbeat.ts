@@ -740,6 +740,13 @@ type TimerWakeIssueSummary = {
   latestActivityAgentId: string | null;
 };
 
+type TimerWakeSuppression = {
+  reason: "heartbeat.empty_assigned_inbox" | "heartbeat.blocked_only_inbox";
+  stateKey: string | null;
+  alreadyRecorded: boolean;
+  recordSkippedRequest: boolean;
+};
+
 export function shouldSuppressTimerWakeForAssignedIssues(
   agentId: string,
   assignedIssues: TimerWakeIssueSummary[],
@@ -2880,7 +2887,10 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0) > 0;
   }
 
-  async function shouldSuppressTimerWakeForAgent(agent: typeof agents.$inferSelect) {
+  async function shouldSuppressTimerWakeForAgent(
+    agent: typeof agents.$inferSelect,
+    opts?: { suppressWhenNoAssignedIssues?: boolean },
+  ): Promise<TimerWakeSuppression | null> {
     const assignedIssues = await db
       .select({
         id: issues.id,
@@ -2896,8 +2906,16 @@ export function heartbeatService(db: Db) {
         ),
       );
 
-    if (assignedIssues.length === 0) return false;
-    if (assignedIssues.some((issue) => issue.status !== "blocked")) return false;
+    if (assignedIssues.length === 0) {
+      if (!opts?.suppressWhenNoAssignedIssues) return null;
+      return {
+        reason: "heartbeat.empty_assigned_inbox",
+        stateKey: null,
+        alreadyRecorded: true,
+        recordSkippedRequest: false,
+      };
+    }
+    if (assignedIssues.some((issue) => issue.status !== "blocked")) return null;
 
     const latestActivityRows = await db
       .selectDistinctOn([activityLog.entityId], {
@@ -2958,8 +2976,10 @@ export function heartbeatService(db: Db) {
     const latestSuppressionStateKey = readNonEmptyString(latestSuppressionPayload.suppressionStateKey);
 
     return {
+      reason: "heartbeat.blocked_only_inbox",
       alreadyRecorded: latestSuppressionStateKey === timerWakeSuppressionStateKey,
       stateKey: timerWakeSuppressionStateKey,
+      recordSkippedRequest: true,
     };
   }
 
@@ -4672,16 +4692,29 @@ export function heartbeatService(db: Db) {
       await writeSkippedRequest("heartbeat.disabled");
       return null;
     }
+    const scheduledHeartbeatTimerWake =
+      source === "timer" &&
+      (reason === "heartbeat_timer" ||
+        readNonEmptyString(enrichedContextSnapshot.wakeReason) === "heartbeat_timer");
     const timerWakeSuppression =
-      source === "timer" ? await shouldSuppressTimerWakeForAgent(agent) : null;
+      source === "timer"
+        ? await shouldSuppressTimerWakeForAgent(agent, {
+            suppressWhenNoAssignedIssues: scheduledHeartbeatTimerWake,
+          })
+        : null;
     if (timerWakeSuppression) {
-      if (timerWakeSuppression.alreadyRecorded) {
+      if (timerWakeSuppression.alreadyRecorded || !timerWakeSuppression.recordSkippedRequest) {
         return null;
       }
-      await writeSkippedRequest("heartbeat.blocked_only_inbox", {
-        ...(payload ?? {}),
-        suppressionStateKey: timerWakeSuppression.stateKey,
-      });
+      await writeSkippedRequest(
+        timerWakeSuppression.reason,
+        timerWakeSuppression.stateKey
+          ? {
+              ...(payload ?? {}),
+              suppressionStateKey: timerWakeSuppression.stateKey,
+            }
+          : payload,
+      );
       return null;
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
