@@ -626,6 +626,7 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
   const prRefs = extractGitHubPullRequestRefs(commentBody);
   const trackedTarget = options?.trackedTarget ?? null;
   let trackedBaseRef: string | null = trackedTarget?.baseRef ?? null;
+  const softPassErrors: string[] = [];
 
   if (trackedTarget) {
     const baseRefResult = await resolveTrackedBaseRef(trackedTarget, headers, repoCache);
@@ -636,6 +637,8 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
         failureKind: "not_landed",
         error: baseRefResult.error,
       };
+    } else if (baseRefResult.softPass && baseRefResult.error) {
+      softPassErrors.push(baseRefResult.error);
     }
   }
 
@@ -658,6 +661,7 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
     }
 
     const result = await verifyCommitRef(ref, headers, repoCache);
+    if (result.softPass && result.error) softPassErrors.push(result.error);
     if (!result.exists && !result.softPass) {
       unreachable.push(ref);
       allSoftPass = false;
@@ -665,6 +669,7 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
       allSoftPass = false;
       if (trackedBaseRef) {
         const landed = await verifyCommitLandedOnBaseRef(ref, trackedBaseRef, headers, repoCache);
+        if (landed.softPass && landed.error) softPassErrors.push(landed.error);
         if (!landed.landed && !landed.softPass) {
           return {
             valid: false,
@@ -700,6 +705,7 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
     }
 
     const result = await verifyPullRequestRef(ref, trackedBaseRef, headers, repoCache);
+    if (result.softPass && result.error) softPassErrors.push(result.error);
     if (!result.merged && !result.softPass) {
       return {
         valid: false,
@@ -717,7 +723,13 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
       { commitRefs, prRefs },
       "All GitHub evidence verifications soft-passed (could not reach GitHub API)",
     );
-    return { valid: true, softPass: true };
+    return {
+      valid: true,
+      softPass: true,
+      error:
+        softPassErrors[0] ??
+        "GitHub evidence checks soft-passed due to unavailable GitHub verification (network/auth/rate-limit).",
+    };
   }
 
   return { valid: true };

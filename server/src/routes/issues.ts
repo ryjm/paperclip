@@ -156,6 +156,25 @@ export function buildDoneEvidenceUnreachableErrorResponse(remoteError: string) {
   };
 }
 
+export function buildDoneEvidenceVerificationUnavailableErrorResponse(remoteError?: string) {
+  return {
+    error:
+      "Cannot mark issue done: GitHub evidence verification is currently unavailable, " +
+      "so Paperclip cannot confirm repository traceability.",
+    details: {
+      ...buildDoneEvidenceRequiredDetails(),
+      remoteVerification: {
+        result: "verification_unavailable",
+        detail:
+          remoteError ??
+          "GitHub evidence checks soft-passed due to unavailable GitHub verification (network/auth/rate-limit).",
+        fix:
+          "Retry once GitHub verification is available. For private repositories, set GITHUB_TOKEN so commit/PR evidence can be verified.",
+      },
+    },
+  };
+}
+
 export function buildDoneEvidenceNotLandedErrorResponse(
   landingError: string,
   trackedTarget?: GitHubEvidenceTarget | null,
@@ -1096,6 +1115,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
           const remoteCheck = await verifyGitHubEvidenceIsRemoteVisible(evidenceCommentBody!, {
             trackedTarget: trackedGitHubTarget,
           });
+          if (remoteCheck.softPass) {
+            res.status(422).json(buildDoneEvidenceVerificationUnavailableErrorResponse(remoteCheck.error));
+            return;
+          }
           if (!remoteCheck.valid) {
             if (remoteCheck.failureKind === "not_landed") {
               res.status(422).json(

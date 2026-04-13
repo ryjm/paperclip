@@ -198,6 +198,60 @@ describe("issue done transition route", () => {
     }
   });
 
+  it("rejects done when GitHub verification soft-passes for private repo evidence without GITHUB_TOKEN", async () => {
+    const issue = await createCodeIssue();
+    const originalFetch = globalThis.fetch;
+    vi.stubEnv("GITHUB_TOKEN", "");
+    // Mock: commit 404 + repo 404 (inaccessible without token) -> soft-pass in verifier
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: false, status: 404 });
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "Done in https://github.com/acme/private-repo/commit/deadbeef1234567",
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("verification is currently unavailable");
+      expect(res.body.details.remoteVerification).toMatchObject({
+        result: "verification_unavailable",
+      });
+      expect(String(res.body.details.remoteVerification?.detail ?? "")).toContain("GITHUB_TOKEN");
+    } finally {
+      globalThis.fetch = originalFetch;
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("rejects done when GitHub verification soft-passes due to API rate limiting", async () => {
+    const issue = await createCodeIssue();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: false, status: 403 });
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "Done in https://github.com/acme/paperclip/commit/deadbeef1234567",
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("verification is currently unavailable");
+      expect(res.body.details.remoteVerification).toMatchObject({
+        result: "verification_unavailable",
+        detail: "GitHub API rate limited",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("allows done without a new comment when the latest existing comment has a GitHub link", async () => {
     const issue = await createCodeIssue();
     await issueService(db).addComment(
@@ -205,13 +259,19 @@ describe("issue done transition route", () => {
       "Shipped in https://github.com/acme/paperclip/commit/abc1234",
       { userId: "local-board" },
     );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
 
-    const res = await request(app)
-      .patch(`/api/issues/${issue.id}`)
-      .send({ status: "done" });
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({ status: "done" });
 
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("done");
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("done");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("rejects done when PR evidence is not merged into the tracked base branch", async () => {
