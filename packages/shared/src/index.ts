@@ -162,10 +162,14 @@ export {
 } from "./network-bind.js";
 
 export {
-  DONE_TRANSITION_EVIDENCE_REQUIREMENTS,
-  type DoneTransitionEvidenceRequirement,
-  type DoneTransitionEvidenceResult,
-  evaluateDoneTransitionEvidence,
+  isCodeLabelName,
+  isUiLabelName,
+  containsGitHubCommitOrPrLink,
+  containsPassingPlaywrightEvidence,
+  resolveDoneTransitionEvidenceComment,
+  issueRequiresCodeDoneEvidence,
+  issueRequiresUiDoneEvidence,
+  issueHasImageAttachment,
 } from "./issue-done-policy.js";
 
 export type {
