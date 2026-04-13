@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
   getRelationSummaries: vi.fn(),
+  addComment: vi.fn(),
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -91,6 +92,12 @@ describe("issue dependency wakeups in issue routes", () => {
       latestCommentAt: null,
     });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "issue-1",
+      companyId: "company-1",
+      body: "please verify the status semantics",
+    });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });
@@ -206,6 +213,61 @@ describe("issue dependency wakeups in issue routes", () => {
         payload: expect.objectContaining({
           issueId: "parent-1",
           completedChildIssueId: "child-1",
+        }),
+      }),
+    );
+  });
+
+  it("preserves status and skips dependency completion wakeups on comment-only PATCH", async () => {
+    const existing = {
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Investigate linked issue",
+      description: null,
+      status: "blocked",
+      priority: "high",
+      parentId: "parent-1",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+    }));
+
+    const res = await request(createApp()).patch("/api/issues/issue-1").send({
+      comment: "please verify the status semantics",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("blocked");
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-1",
+      expect.objectContaining({
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    expect(mockIssueService.update.mock.calls[0]?.[1]).not.toHaveProperty("status");
+    expect(mockIssueService.listWakeableBlockedDependents).not.toHaveBeenCalled();
+    expect(mockIssueService.getWakeableParentAfterChildCompletion).not.toHaveBeenCalled();
+    expect(mockWakeup).toHaveBeenCalledTimes(1);
+    expect(mockWakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: "issue-1",
+          commentId: "comment-1",
+          mutation: "comment",
         }),
       }),
     );

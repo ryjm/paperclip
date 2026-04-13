@@ -39,6 +39,10 @@ export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
   "application/json",
   "text/csv",
 ];
+export const DOWNLOAD_ONLY_ATTACHMENT_TYPES: readonly string[] = [
+  "text/html",
+  "application/xhtml+xml",
+];
 
 /**
  * Parse a comma-separated list of MIME type patterns into a normalised array.
@@ -60,7 +64,7 @@ export function parseAllowedTypes(raw: string | undefined): string[] {
  * patterns ("image/*", "application/vnd.openxmlformats-officedocument.*").
  */
 export function matchesContentType(contentType: string, allowedPatterns: string[]): boolean {
-  const ct = contentType.toLowerCase();
+  const ct = contentType.toLowerCase().split(";", 1)[0]?.trim() ?? "";
   return allowedPatterns.some((pattern) => {
     if (pattern === "*") return true;
     if (pattern.endsWith("/*") || pattern.endsWith(".*")) {
@@ -77,6 +81,17 @@ export function normalizeContentType(contentType: string | null | undefined): st
 
 export function isInlineAttachmentContentType(contentType: string): boolean {
   return matchesContentType(contentType, [...INLINE_ATTACHMENT_TYPES]);
+}
+
+export function isDownloadOnlyAttachmentContentType(contentType: string): boolean {
+  return matchesContentType(contentType, [...DOWNLOAD_ONLY_ATTACHMENT_TYPES]);
+}
+
+export function getSafeAttachmentResponseContentType(contentType: string): string {
+  const normalized = normalizeContentType(contentType);
+  return isDownloadOnlyAttachmentContentType(normalized)
+    ? DEFAULT_ATTACHMENT_CONTENT_TYPE
+    : normalized;
 }
 
 // ---------- Module-level singletons read once at startup ----------

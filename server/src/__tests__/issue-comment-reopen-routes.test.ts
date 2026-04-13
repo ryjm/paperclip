@@ -184,7 +184,9 @@ describe("issue comment reopen routes", () => {
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.getById
+      .mockResolvedValueOnce(makeIssue("todo"))
+      .mockResolvedValueOnce({ ...makeIssue("todo"), assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("todo"),
       ...patch,
@@ -515,5 +517,46 @@ describe("issue comment reopen routes", () => {
       "company-1",
       "11111111-1111-4111-8111-111111111111",
     );
+  });
+
+  it("returns a refreshed issue snapshot after PATCH comment writes bump updatedAt", async () => {
+    const initialIssue = {
+      ...makeIssue("todo"),
+      updatedAt: new Date("2026-04-13T10:00:00.000Z"),
+    };
+    const updatedIssue = {
+      ...initialIssue,
+      updatedAt: new Date("2026-04-13T10:01:00.000Z"),
+    };
+    const refreshedIssue = {
+      ...updatedIssue,
+      updatedAt: new Date("2026-04-13T10:02:00.000Z"),
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(initialIssue)
+      .mockResolvedValueOnce(refreshedIssue);
+    mockIssueService.update.mockResolvedValue(updatedIssue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-2",
+      issueId: initialIssue.id,
+      companyId: initialIssue.companyId,
+      body: "fresh comment",
+      createdAt: new Date("2026-04-13T10:02:00.000Z"),
+      updatedAt: new Date("2026-04-13T10:02:00.000Z"),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    });
+
+    const res = await request(await installActor(createApp()))
+      .patch(`/api/issues/${initialIssue.id}`)
+      .send({ comment: "fresh comment" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getById).toHaveBeenCalledTimes(2);
+    expect(new Date(res.body.updatedAt).toISOString()).toBe(refreshedIssue.updatedAt.toISOString());
+    expect(res.body.comment).toMatchObject({
+      id: "comment-2",
+      body: "fresh comment",
+    });
   });
 });
