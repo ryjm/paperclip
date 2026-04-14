@@ -2773,11 +2773,17 @@ export function heartbeatService(db: Db) {
     now: Date,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
-    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
+    const retryContext = deriveProcessLossRetryContext(contextSnapshot);
+    if (!retryContext.canRetry) {
+      return null;
+    }
+
+    const issueId = readNonEmptyString(retryContext.payload.issueId);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(retryContext.payload, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = {
       ...contextSnapshot,
+      ...retryContext.payload,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason: "process_lost",
@@ -3168,7 +3174,12 @@ export function heartbeatService(db: Db) {
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const processLossRetryContext = deriveProcessLossRetryContext(parseObject(run.contextSnapshot));
+      const shouldRetry =
+        tracksLocalChild &&
+        (!!run.processPid || !!run.processGroupId) &&
+        (run.processLossRetryCount ?? 0) < 1 &&
+        processLossRetryContext.canRetry;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
