@@ -300,6 +300,7 @@ export type {
   FinanceSummary,
   FinanceByBiller,
   FinanceByKind,
+  AgentWakeCooldown,
   AgentWakeupResponse,
   AgentWakeupSkipped,
   HeartbeatRun,

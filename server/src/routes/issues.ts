@@ -269,7 +269,7 @@ async function resolveTrackedGitHubEvidenceTarget(
   };
 }
 
-export function issueRoutes(db: Db, storage: StorageService) {
+export function issueRoutes(db: Db, storage: StorageService, _opts?: { feedbackExportService?: unknown }) {
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
