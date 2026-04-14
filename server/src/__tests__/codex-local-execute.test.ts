@@ -1,8 +1,22 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-codex-local/server";
+
+function emptyManagedSkillFingerprint(): string {
+  return createHash("sha256")
+    .update("paperclip-codex-managed-skill-fingerprint:v1\n")
+    .digest("hex");
+}
+
+async function writeManagedSkillSource(root: string, skillName: string): Promise<string> {
+  const skillSource = path.join(root, "skills", skillName);
+  await fs.mkdir(skillSource, { recursive: true });
+  await fs.writeFile(path.join(skillSource, "SKILL.md"), `# ${skillName}\n`, "utf8");
+  return skillSource;
+}
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -625,6 +639,7 @@ describe("codex execute", () => {
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
     const instructionsPath = path.join(root, "AGENTS.md");
+    const managedSkillSource = await writeManagedSkillSource(root, "managed-skill");
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
     await writeFakeCodexCommand(commandPath);
@@ -650,6 +665,7 @@ describe("codex execute", () => {
           sessionParams: {
             sessionId: "codex-session-1",
             cwd: workspace,
+            paperclipManagedSkillFingerprint: emptyManagedSkillFingerprint(),
           },
           sessionDisplayId: null,
           taskKey: null,
@@ -660,6 +676,16 @@ describe("codex execute", () => {
           instructionsFilePath: instructionsPath,
           env: {
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          paperclipRuntimeSkills: [
+            {
+              key: "managed-skill",
+              runtimeName: "managed-skill",
+              source: managedSkillSource,
+            },
+          ],
+          paperclipSkillSync: {
+            desiredSkills: [],
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
@@ -723,6 +749,139 @@ describe("codex execute", () => {
       );
       expect(promptMetrics.instructionsChars).toBe(0);
       expect(promptMetrics.heartbeatPromptChars).toBe(0);
+      expect(result.sessionParams).toMatchObject({
+        paperclipManagedSkillFingerprint: emptyManagedSkillFingerprint(),
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("starts a fresh session when the saved Codex session has no managed-skill fingerprint", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-resume-missing-skill-fingerprint-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const instructionsPath = path.join(root, "AGENTS.md");
+    const managedSkillSource = await writeManagedSkillSource(root, "managed-skill");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    const logs: LogEntry[] = [];
+    let invocationNotes: string[] = [];
+    let promptMetrics: Record<string, number> = {};
+    try {
+      const result = await execute({
+        runId: "run-resume-missing-skill-fingerprint",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: {
+            sessionId: "codex-session-1",
+            cwd: workspace,
+          },
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          instructionsFilePath: instructionsPath,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          paperclipRuntimeSkills: [
+            {
+              key: "managed-skill",
+              runtimeName: "managed-skill",
+              source: managedSkillSource,
+            },
+          ],
+          paperclipSkillSync: {
+            desiredSkills: [],
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "issue_commented",
+          wakeCommentId: "comment-2",
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-874",
+              title: "chat-speed issues",
+              status: "in_progress",
+              priority: "medium",
+            },
+            commentIds: ["comment-2"],
+            latestCommentId: "comment-2",
+            comments: [
+              {
+                id: "comment-2",
+                issueId: "issue-1",
+                body: "Second comment",
+                bodyTruncated: false,
+                createdAt: "2026-03-28T14:35:10.000Z",
+                author: { type: "user", id: "user-1" },
+              },
+            ],
+            commentWindow: {
+              requestedCount: 1,
+              includedCount: 1,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+        onMeta: async (meta) => {
+          invocationNotes = meta.commandNotes ?? [];
+          promptMetrics = meta.promptMetrics ?? {};
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.sessionParams).toMatchObject({
+        paperclipManagedSkillFingerprint: emptyManagedSkillFingerprint(),
+      });
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
+      expect(capture.argv).not.toEqual(expect.arrayContaining(["resume", "codex-session-1", "-"]));
+      expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
+      expect(capture.prompt).toContain("You are managed instructions.");
+      expect(capture.prompt).not.toContain("## Paperclip Resume Delta");
+      expect(invocationNotes).not.toContain(
+        "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+      );
+      expect(promptMetrics.instructionsChars).toBeGreaterThan(0);
+      expect(promptMetrics.heartbeatPromptChars).toBeGreaterThan(0);
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("has no managed-skill fingerprint and will not be resumed"),
+        }),
+      );
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
