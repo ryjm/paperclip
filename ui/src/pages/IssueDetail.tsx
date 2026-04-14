@@ -20,6 +20,7 @@ import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils"
 import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
+import { IssueDoneEvidenceNotice } from "../components/IssueDoneEvidenceNotice";
 import { IssueProperties } from "../components/IssueProperties";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -680,9 +681,6 @@ export function IssueDetail() {
   const uiPlaywrightSatisfied = !uiEvidenceRequired || containsPassingPlaywrightEvidence(latestCommentBody);
   const doneEvidenceMissing = (codeEvidenceRequired && !codeEvidenceSatisfied)
     || (uiEvidenceRequired && (!uiScreenshotSatisfied || !uiPlaywrightSatisfied));
-  const doneEvidenceTone = doneEvidenceMissing
-    ? "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-100"
-    : "border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-100";
   const attachmentUploadButton = (
     <>
       <input
@@ -877,30 +875,13 @@ export function IssueDetail() {
             </Popover>
           </div>
         </div>
-        <div className={cn("rounded-lg border px-3 py-2 text-xs", doneEvidenceTone)}>
-          <div className="font-medium">Done evidence</div>
-          {codeEvidenceRequired ? (
-            <p className="mt-1">
-              <code>code</code>: latest comment must include a GitHub commit or PR link.
-              {" "}
-              <span className="font-medium">{codeEvidenceSatisfied ? "Ready" : "Missing"}</span>
-            </p>
-          ) : null}
-          {uiEvidenceRequired ? (
-            <p className="mt-1">
-              <code>ui</code>: issue needs at least one image attachment plus a latest comment with passing Playwright evidence.
-              {" "}
-              <span className="font-medium">
-                Screenshots {uiScreenshotSatisfied ? "ready" : "missing"}; Playwright {uiPlaywrightSatisfied ? "ready" : "missing"}
-              </span>
-            </p>
-          ) : null}
-          {!codeEvidenceRequired && !uiEvidenceRequired ? (
-            <p className="mt-1 text-muted-foreground">
-              Use <code>code</code> for repo-changing work and <code>ui</code> for UI-changing work. The <code>ui</code> label turns on screenshot-attachment and passing Playwright requirements before <code>done</code>.
-            </p>
-          ) : null}
-        </div>
+        <IssueDoneEvidenceNotice
+          codeEvidenceRequired={codeEvidenceRequired}
+          codeEvidenceSatisfied={codeEvidenceSatisfied}
+          uiEvidenceRequired={uiEvidenceRequired}
+          uiScreenshotSatisfied={uiScreenshotSatisfied}
+          uiPlaywrightSatisfied={uiPlaywrightSatisfied}
+        />
 
         <InlineEditor
           value={issue.title}
