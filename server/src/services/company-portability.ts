@@ -837,6 +837,23 @@ async function readGitOutput(cwd: string, args: string[]) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizeGitRemoteUrl(url: string | null): string | null {
+  if (!url) return null;
+  const sshMatch = url.match(/^git@([^:]+):(.+)$/);
+  if (sshMatch) {
+    const host = sshMatch[1];
+    const pathPart = sshMatch[2]!.replace(/\.git$/i, "");
+    return `https://${host}/${pathPart}.git`;
+  }
+  const sshProtoMatch = url.match(/^ssh:\/\/git@([^/]+)\/(.+)$/);
+  if (sshProtoMatch) {
+    const host = sshProtoMatch[1];
+    const pathPart = sshProtoMatch[2]!.replace(/\.git$/i, "");
+    return `https://${host}/${pathPart}.git`;
+  }
+  return url;
+}
+
 async function inferPortableWorkspaceGitMetadata(workspace: NonNullable<ProjectLike["workspaces"]>[number]) {
   const cwd = asString(workspace.cwd);
   if (!cwd) {
@@ -878,7 +895,7 @@ async function inferPortableWorkspaceGitMetadata(workspace: NonNullable<ProjectL
   }
 
   return {
-    repoUrl,
+    repoUrl: normalizeGitRemoteUrl(repoUrl),
     repoRef,
     defaultRef,
   };
@@ -901,7 +918,7 @@ async function buildPortableProjectWorkspaces(
       !asString(workspace.repoUrl) || !asString(workspace.repoRef) || !asString(workspace.defaultRef)
         ? await inferPortableWorkspaceGitMetadata(workspace)
         : { repoUrl: null, repoRef: null, defaultRef: null };
-    const repoUrl = asString(workspace.repoUrl) ?? inferredGitMetadata.repoUrl;
+    const repoUrl = normalizeGitRemoteUrl(asString(workspace.repoUrl)) ?? inferredGitMetadata.repoUrl;
     if (!repoUrl) {
       warnings.push(`Project ${projectSlug} workspace ${workspace.name} was omitted from export because it does not have a portable repoUrl.`);
       continue;
@@ -4010,6 +4027,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const manifestAgent = plan.selectedAgents.find((agent) => agent.slug === planAgent.slug);
         if (!manifestAgent) continue;
         if (planAgent.action === "skip") {
+          if (planAgent.existingAgentId) {
+            importedSlugToAgentId.set(planAgent.slug, planAgent.existingAgentId);
+          }
           resultAgents.push({
             slug: planAgent.slug,
             id: planAgent.existingAgentId,
@@ -4165,6 +4185,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const manifestProject = sourceManifest.projects.find((project) => project.slug === planProject.slug);
         if (!manifestProject) continue;
         if (planProject.action === "skip") {
+          if (planProject.existingProjectId) {
+            importedSlugToProjectId.set(planProject.slug, planProject.existingProjectId);
+          }
           resultProjects.push({
             slug: planProject.slug,
             id: planProject.existingProjectId,
