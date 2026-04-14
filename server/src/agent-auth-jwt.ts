@@ -18,6 +18,7 @@ export interface LocalAgentJwtClaims {
 }
 
 const JWT_ALGORITHM = "HS256";
+const LOCAL_TRUSTED_DEV_FALLBACK_SECRET = "paperclip-local-agent-dev-secret";
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
@@ -26,7 +27,14 @@ function parseNumber(value: string | undefined, fallback: number) {
 }
 
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+  const configuredSecret =
+    process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+  const deploymentMode = process.env.PAPERCLIP_DEPLOYMENT_MODE?.trim() || "local_trusted";
+  const secret =
+    configuredSecret ||
+    (deploymentMode === "local_trusted" || process.env.NODE_ENV === "test"
+      ? LOCAL_TRUSTED_DEV_FALLBACK_SECRET
+      : "");
   if (!secret) return null;
 
   return {

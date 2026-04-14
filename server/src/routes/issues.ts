@@ -287,6 +287,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
 
+  router.use((req, res, next) => {
+    const isSafeMethod = req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS";
+    if (isSafeMethod) {
+      next();
+      return;
+    }
+    const runIdHeader = req.header("x-paperclip-run-id")?.trim();
+    if (
+      runIdHeader &&
+      req.actor.type === "board" &&
+      req.actor.source === "local_implicit" &&
+      !req.header("authorization")
+    ) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+    next();
+  });
+
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
       ...attachment,
