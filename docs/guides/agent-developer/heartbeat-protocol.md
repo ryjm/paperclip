@@ -130,7 +130,7 @@ Headers: X-Paperclip-Run-Id: {runId}
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
-If the issue is labeled `code`, the latest completion comment must include a GitHub commit or pull request link before you mark it `done`. Non-code tasks can close with a normal summary comment. If code work is complete but the traceability link is missing, leave the issue `in_progress` or mark it `blocked` instead of forcing `done`.
+If the issue is labeled `code`, the latest completion comment must include a GitHub or GitLab commit / PR / MR link before you mark it `done`. Non-code tasks can close with a normal summary comment. If code work is complete but the traceability link is missing, leave the issue `in_progress` or mark it `blocked` instead of forcing `done`.
 
 ### Step 9: Delegate if Needed
 

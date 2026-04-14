@@ -1,44 +1,145 @@
 /**
- * Verifies that GitHub commit evidence cited in issue comments is actually
- * reachable on the remote repository, not just a locally-constructed URL
- * pointing at an unpushed commit.
+ * Verifies that commit evidence cited in issue comments is actually reachable
+ * on the remote repository, not just a locally-constructed URL pointing at an
+ * unpushed commit.
  *
- * PR links are inherently remote-visible (you cannot create a PR without
- * pushing), so only commit links require verification.
+ * Review links are inherently remote-visible, so only commit links require
+ * verification.
  */
 
 import { logger } from "../middleware/logger.js";
 
-const GITHUB_COMMIT_URL_CAPTURE_RE =
-  /https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/commit\/([0-9a-fA-F]{7,40})/g;
-
-const GITHUB_PR_LINK_RE =
-  /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/;
-
 const VERIFY_TIMEOUT_MS = 10_000;
+const URL_RE = /https?:\/\/[^\s<>)\]}]+/g;
 
 export interface GitHubCommitRef {
+  provider: "github";
+  host: string;
   owner: string;
   repo: string;
   sha: string;
   url: string;
 }
 
-export function extractGitHubCommitRefs(body: string): GitHubCommitRef[] {
-  const refs: GitHubCommitRef[] = [];
-  for (const match of body.matchAll(GITHUB_COMMIT_URL_CAPTURE_RE)) {
-    refs.push({
-      owner: match[1],
-      repo: match[2],
-      sha: match[3],
-      url: match[0],
-    });
+export interface GitLabCommitRef {
+  provider: "gitlab";
+  host: string;
+  origin: string;
+  projectPath: string;
+  sha: string;
+  url: string;
+}
+
+export type CommitEvidenceRef = GitHubCommitRef | GitLabCommitRef;
+
+type ReviewEvidenceLink = {
+  kind: "review";
+  provider: "github" | "gitlab";
+  url: string;
+};
+
+type CommitEvidenceLink = {
+  kind: "commit";
+  provider: "github" | "gitlab";
+  url: string;
+  ref: CommitEvidenceRef;
+};
+
+type EvidenceLink = ReviewEvidenceLink | CommitEvidenceLink;
+
+function trimCandidateUrl(rawUrl: string): string {
+  return rawUrl.replace(/[.,;:!?]+$/, "");
+}
+
+function parseGitHubEvidence(url: URL, normalizedUrl: string): EvidenceLink | null {
+  if (url.hostname !== "github.com") return null;
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (segments.length !== 4) return null;
+  const [owner, repo, kind, value] = segments;
+  if (kind === "commit" && /^[0-9a-fA-F]{7,40}$/.test(value)) {
+    return {
+      kind: "commit",
+      provider: "github",
+      url: normalizedUrl,
+      ref: {
+        provider: "github",
+        host: url.host,
+        owner,
+        repo,
+        sha: value,
+        url: normalizedUrl,
+      },
+    };
+  }
+  if (kind === "pull" && /^\d+$/.test(value)) {
+    return {
+      kind: "review",
+      provider: "github",
+      url: normalizedUrl,
+    };
+  }
+  return null;
+}
+
+function parseGitLabEvidence(url: URL, normalizedUrl: string): EvidenceLink | null {
+  const segments = url.pathname.split("/").filter(Boolean);
+  const dashIndex = segments.indexOf("-");
+  if (dashIndex < 2 || dashIndex !== segments.length - 3) return null;
+  const projectPathSegments = segments.slice(0, dashIndex);
+  const kind = segments[dashIndex + 1];
+  const value = segments[dashIndex + 2];
+  const projectPath = projectPathSegments.join("/");
+  if (kind === "commit" && /^[0-9a-fA-F]{7,40}$/.test(value)) {
+    return {
+      kind: "commit",
+      provider: "gitlab",
+      url: normalizedUrl,
+      ref: {
+        provider: "gitlab",
+        host: url.host,
+        origin: url.origin,
+        projectPath,
+        sha: value,
+        url: normalizedUrl,
+      },
+    };
+  }
+  if (kind === "merge_requests" && /^\d+$/.test(value)) {
+    return {
+      kind: "review",
+      provider: "gitlab",
+      url: normalizedUrl,
+    };
+  }
+  return null;
+}
+
+function parseEvidenceUrl(rawUrl: string): EvidenceLink | null {
+  const normalizedUrl = trimCandidateUrl(rawUrl);
+  let url: URL;
+  try {
+    url = new URL(normalizedUrl);
+  } catch {
+    return null;
+  }
+  return parseGitHubEvidence(url, normalizedUrl) ?? parseGitLabEvidence(url, normalizedUrl);
+}
+
+export function extractCommitEvidenceRefs(body: string): CommitEvidenceRef[] {
+  const refs: CommitEvidenceRef[] = [];
+  for (const match of body.matchAll(URL_RE)) {
+    const evidence = parseEvidenceUrl(match[0]);
+    if (evidence?.kind === "commit") refs.push(evidence.ref);
   }
   return refs;
 }
 
-export function containsGitHubPrLink(body: string): boolean {
-  return GITHUB_PR_LINK_RE.test(body);
+export function containsCommitOrReviewLink(body: string | null | undefined): boolean {
+  if (!body) return false;
+  for (const match of body.matchAll(URL_RE)) {
+    if (parseEvidenceUrl(match[0])) return true;
+  }
+  return false;
 }
 
 export interface VerifyResult {
@@ -47,7 +148,7 @@ export interface VerifyResult {
   /** human-readable explanation when invalid */
   error?: string;
   /** refs that could not be found on the remote */
-  unreachableRefs?: GitHubCommitRef[];
+  unreachableRefs?: CommitEvidenceRef[];
   /** true when verification was skipped due to network/auth issues */
   softPass?: boolean;
 }
@@ -162,24 +263,115 @@ async function verifyCommitRef(ref: GitHubCommitRef): Promise<{
   };
 }
 
+async function verifyGitLabCommitRef(ref: GitLabCommitRef): Promise<{
+  exists: boolean;
+  softPass: boolean;
+  error?: string;
+}> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "User-Agent": "Paperclip-Evidence-Validator",
+  };
+  const token = process.env.GITLAB_TOKEN;
+  if (token) {
+    headers["PRIVATE-TOKEN"] = token;
+  }
+
+  const encodedProjectPath = encodeURIComponent(ref.projectPath);
+  const commitUrl = `${ref.origin}/api/v4/projects/${encodedProjectPath}/repository/commits/${ref.sha}`;
+
+  let commitResponse: Response;
+  try {
+    commitResponse = await fetch(commitUrl, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ ref, error: msg }, "GitLab commit verification network error, soft-passing");
+    return { exists: false, softPass: true, error: `Network error verifying commit: ${msg}` };
+  }
+
+  if (commitResponse.ok) {
+    return { exists: true, softPass: false };
+  }
+
+  if (commitResponse.status === 401 || commitResponse.status === 403 || commitResponse.status === 429) {
+    logger.warn(
+      { ref, status: commitResponse.status },
+      "GitLab API auth or rate-limit error during commit verification, soft-passing",
+    );
+    return { exists: false, softPass: true, error: "GitLab API auth or rate-limit error" };
+  }
+
+  if (commitResponse.status === 404) {
+    try {
+      const projectUrl = `${ref.origin}/api/v4/projects/${encodedProjectPath}`;
+      const projectResponse = await fetch(projectUrl, {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
+      });
+
+      if (projectResponse.ok) {
+        return {
+          exists: false,
+          softPass: false,
+          error: `Commit ${ref.sha.slice(0, 7)} not found on ${ref.host}/${ref.projectPath}`,
+        };
+      }
+
+      logger.warn(
+        { ref, projectStatus: projectResponse.status },
+        "Cannot verify commit on inaccessible GitLab project, soft-passing",
+      );
+      return {
+        exists: false,
+        softPass: true,
+        error: `Cannot verify commit on inaccessible GitLab project ${ref.host}/${ref.projectPath} — set GITLAB_TOKEN for private project verification`,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ ref, error: msg }, "Failed to check GitLab project visibility, soft-passing");
+      return { exists: false, softPass: true, error: `Network error checking project visibility: ${msg}` };
+    }
+  }
+
+  if (commitResponse.status >= 500) {
+    logger.warn({ ref, status: commitResponse.status }, "GitLab API error, soft-passing");
+    return { exists: false, softPass: true, error: `GitLab API returned ${commitResponse.status}` };
+  }
+
+  return {
+    exists: false,
+    softPass: false,
+    error: `GitLab API returned ${commitResponse.status} for commit ${ref.sha.slice(0, 7)}`,
+  };
+}
+
 /**
  * Verify that all GitHub commit evidence in a comment body is reachable
  * on the remote. PR links are accepted without verification since they
  * are inherently remote-visible.
  */
-export async function verifyGitHubEvidenceIsRemoteVisible(commentBody: string): Promise<VerifyResult> {
-  const commitRefs = extractGitHubCommitRefs(commentBody);
+async function verifyCommitRefOnRemote(ref: CommitEvidenceRef) {
+  return ref.provider === "github" ? verifyCommitRef(ref) : verifyGitLabCommitRef(ref);
+}
 
-  // If the comment only has PR links (no commit refs), it's valid — PRs are inherently remote
+export async function verifyCommitEvidenceIsRemoteVisible(commentBody: string): Promise<VerifyResult> {
+  const commitRefs = extractCommitEvidenceRefs(commentBody);
+
+  // If the comment only has review links (no commit refs), it's valid.
   if (commitRefs.length === 0) {
     return { valid: true };
   }
 
-  const unreachable: GitHubCommitRef[] = [];
+  const unreachable: CommitEvidenceRef[] = [];
   let allSoftPass = true;
 
   for (const ref of commitRefs) {
-    const result = await verifyCommitRef(ref);
+    const result = await verifyCommitRefOnRemote(ref);
     if (!result.exists && !result.softPass) {
       unreachable.push(ref);
       allSoftPass = false;
@@ -190,7 +382,11 @@ export async function verifyGitHubEvidenceIsRemoteVisible(commentBody: string): 
 
   if (unreachable.length > 0) {
     const details = unreachable
-      .map((r) => `\`${r.sha.slice(0, 7)}\` on github.com/${r.owner}/${r.repo}`)
+      .map((r) =>
+        r.provider === "github"
+          ? `\`${r.sha.slice(0, 7)}\` on ${r.host}/${r.owner}/${r.repo}`
+          : `\`${r.sha.slice(0, 7)}\` on ${r.host}/${r.projectPath}`,
+      )
       .join(", ");
     return {
       valid: false,
@@ -200,7 +396,7 @@ export async function verifyGitHubEvidenceIsRemoteVisible(commentBody: string): 
   }
 
   if (allSoftPass) {
-    logger.warn({ commitRefs }, "All commit evidence verifications soft-passed (could not reach GitHub API)");
+    logger.warn({ commitRefs }, "All commit evidence verifications soft-passed (could not reach forge APIs)");
     return { valid: true, softPass: true };
   }
 

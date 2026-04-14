@@ -89,7 +89,7 @@ describe("issue done transition route", () => {
     });
   }
 
-  it("rejects done transitions for code issues without GitHub evidence", async () => {
+  it("rejects done transitions for code issues without accepted traceability evidence", async () => {
     const issue = await createCodeIssue();
 
     const res = await request(app)
@@ -97,7 +97,9 @@ describe("issue done transition route", () => {
       .send({ status: "done", comment: "Implemented locally." });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toContain("latest completion comment must include a GitHub commit or pull request link");
+    expect(res.body.error).toContain(
+      "latest completion comment must include a GitHub or GitLab commit, pull request, or merge request link",
+    );
     expect(res.body.details).toMatchObject({
       requiredLabel: "code",
       fallback: {
@@ -148,17 +150,61 @@ describe("issue done transition route", () => {
 
   it("allows done without a new comment when the latest existing comment has a GitHub link", async () => {
     const issue = await createCodeIssue();
-    await issueService(db).addComment(
-      issue.id,
-      "Shipped in https://github.com/acme/paperclip/commit/abc1234",
-      { userId: "local-board" },
-    );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
+
+    try {
+      await issueService(db).addComment(
+        issue.id,
+        "Shipped in https://github.com/acme/paperclip/commit/abc1234",
+        { userId: "local-board" },
+      );
+
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({ status: "done" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("done");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("allows done when the transition comment has a GitLab merge request link", async () => {
+    const issue = await createCodeIssue();
 
     const res = await request(app)
       .patch(`/api/issues/${issue.id}`)
-      .send({ status: "done" });
+      .send({
+        status: "done",
+        comment: "Merged in https://gitlab.com/acme/paperclip/-/merge_requests/17",
+      });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("done");
+  });
+
+  it("allows done when the latest existing comment has a GitLab commit link", async () => {
+    const issue = await createCodeIssue();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
+
+    try {
+      await issueService(db).addComment(
+        issue.id,
+        "Shipped in https://gitlab.com/acme/paperclip/-/commit/abc1234",
+        { userId: "local-board" },
+      );
+
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({ status: "done" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("done");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

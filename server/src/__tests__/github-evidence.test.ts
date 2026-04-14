@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  containsGitHubPrLink,
-  extractGitHubCommitRefs,
-  verifyGitHubEvidenceIsRemoteVisible,
+  containsCommitOrReviewLink,
+  extractCommitEvidenceRefs,
+  verifyCommitEvidenceIsRemoteVisible,
 } from "../routes/github-evidence.js";
 
-describe("extractGitHubCommitRefs", () => {
+describe("extractCommitEvidenceRefs", () => {
   it("extracts owner, repo, and sha from commit URLs", () => {
     const body = "Shipped in https://github.com/acme/paperclip/commit/abc1234def5678";
-    const refs = extractGitHubCommitRefs(body);
+    const refs = extractCommitEvidenceRefs(body);
     expect(refs).toEqual([
       {
+        provider: "github",
+        host: "github.com",
         owner: "acme",
         repo: "paperclip",
         sha: "abc1234def5678",
@@ -22,38 +24,47 @@ describe("extractGitHubCommitRefs", () => {
   it("extracts multiple commit refs", () => {
     const body =
       "First: https://github.com/acme/repo/commit/aaa1111 " +
-      "Second: https://github.com/other/thing/commit/bbb2222";
-    const refs = extractGitHubCommitRefs(body);
+      "Second: https://gitlab.com/acme/subgroup/thing/-/commit/bbb2222";
+    const refs = extractCommitEvidenceRefs(body);
     expect(refs).toHaveLength(2);
-    expect(refs[0].owner).toBe("acme");
-    expect(refs[1].owner).toBe("other");
+    expect(refs[0]).toMatchObject({ provider: "github", owner: "acme" });
+    expect(refs[1]).toMatchObject({
+      provider: "gitlab",
+      host: "gitlab.com",
+      projectPath: "acme/subgroup/thing",
+    });
   });
 
   it("returns empty array for PR-only links", () => {
     const body = "Merged in https://github.com/acme/paperclip/pull/42";
-    expect(extractGitHubCommitRefs(body)).toEqual([]);
+    expect(extractCommitEvidenceRefs(body)).toEqual([]);
   });
 
-  it("returns empty array for text without GitHub links", () => {
-    expect(extractGitHubCommitRefs("Just a plain comment")).toEqual([]);
-  });
-});
-
-describe("containsGitHubPrLink", () => {
-  it("detects PR links", () => {
-    expect(containsGitHubPrLink("See https://github.com/acme/repo/pull/123")).toBe(true);
-  });
-
-  it("rejects non-PR GitHub links", () => {
-    expect(containsGitHubPrLink("See https://github.com/acme/repo/commit/abc123")).toBe(false);
+  it("returns empty array for text without accepted links", () => {
+    expect(extractCommitEvidenceRefs("Just a plain comment")).toEqual([]);
   });
 });
 
-describe("verifyGitHubEvidenceIsRemoteVisible", () => {
+describe("containsCommitOrReviewLink", () => {
+  it("detects GitHub PR links", () => {
+    expect(containsCommitOrReviewLink("See https://github.com/acme/repo/pull/123")).toBe(true);
+  });
+
+  it("detects GitLab MR links", () => {
+    expect(containsCommitOrReviewLink("See https://gitlab.com/acme/repo/-/merge_requests/123")).toBe(true);
+  });
+
+  it("rejects unrelated forge links", () => {
+    expect(containsCommitOrReviewLink("See https://github.com/acme/repo/issues/7")).toBe(false);
+  });
+});
+
+describe("verifyCommitEvidenceIsRemoteVisible", () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     vi.stubEnv("GITHUB_TOKEN", "");
+    vi.stubEnv("GITLAB_TOKEN", "");
   });
 
   afterEach(() => {
@@ -62,7 +73,7 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
   });
 
   it("passes when comment contains only PR links (no commit refs to verify)", async () => {
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
+    const result = await verifyCommitEvidenceIsRemoteVisible(
       "Merged in https://github.com/acme/paperclip/pull/42",
     );
     expect(result.valid).toBe(true);
@@ -75,7 +86,7 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
       status: 200,
     });
 
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
+    const result = await verifyCommitEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/paperclip/commit/abc1234",
     );
     expect(result.valid).toBe(true);
@@ -89,7 +100,7 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
       // Second call: repo visibility check → 200 (public)
       .mockResolvedValueOnce({ ok: true, status: 200 });
 
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
+    const result = await verifyCommitEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/paperclip/commit/abc1234",
     );
     expect(result.valid).toBe(false);
@@ -103,7 +114,7 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
 
     globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: false, status: 404 });
 
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
+    const result = await verifyCommitEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/paperclip/commit/abc1234",
     );
     expect(result.valid).toBe(false);
@@ -118,7 +129,7 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
       // repo visibility → 404 (private)
       .mockResolvedValueOnce({ ok: false, status: 404 });
 
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
+    const result = await verifyCommitEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/private-repo/commit/abc1234",
     );
     expect(result.valid).toBe(true);
@@ -128,7 +139,7 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
   it("soft-passes on rate limiting (403)", async () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: false, status: 403 });
 
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
+    const result = await verifyCommitEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/paperclip/commit/abc1234",
     );
     expect(result.valid).toBe(true);
@@ -138,7 +149,7 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
   it("soft-passes on network error", async () => {
     globalThis.fetch = vi.fn().mockRejectedValueOnce(new Error("ECONNREFUSED"));
 
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
+    const result = await verifyCommitEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/paperclip/commit/abc1234",
     );
     expect(result.valid).toBe(true);
@@ -148,7 +159,7 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
   it("soft-passes on GitHub 5xx error", async () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: false, status: 502 });
 
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
+    const result = await verifyCommitEvidenceIsRemoteVisible(
       "Done in https://github.com/acme/paperclip/commit/abc1234",
     );
     expect(result.valid).toBe(true);
@@ -165,12 +176,62 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
       // Repo check for second commit: public
       .mockResolvedValueOnce({ ok: true, status: 200 });
 
-    const result = await verifyGitHubEvidenceIsRemoteVisible(
+    const result = await verifyCommitEvidenceIsRemoteVisible(
       "First: https://github.com/acme/repo/commit/aaa1111 " +
         "Second: https://github.com/acme/repo/commit/bbb2222",
     );
     expect(result.valid).toBe(false);
     expect(result.unreachableRefs).toHaveLength(1);
     expect(result.unreachableRefs![0].sha).toBe("bbb2222");
+  });
+
+  it("passes when comment contains only GitLab MR links", async () => {
+    const result = await verifyCommitEvidenceIsRemoteVisible(
+      "Merged in https://gitlab.com/acme/paperclip/-/merge_requests/42",
+    );
+    expect(result.valid).toBe(true);
+    expect(result.softPass).toBeUndefined();
+  });
+
+  it("passes when GitLab commit exists on remote", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
+
+    const result = await verifyCommitEvidenceIsRemoteVisible(
+      "Done in https://gitlab.com/acme/paperclip/-/commit/abc1234",
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it("rejects when GitLab commit does not exist on accessible remote", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+
+    const result = await verifyCommitEvidenceIsRemoteVisible(
+      "Done in https://gitlab.com/acme/paperclip/-/commit/abc1234",
+    );
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("not reachable on the remote");
+    expect(result.unreachableRefs).toHaveLength(1);
+    expect(result.unreachableRefs![0]).toMatchObject({
+      provider: "gitlab",
+      host: "gitlab.com",
+      projectPath: "acme/paperclip",
+      sha: "abc1234",
+    });
+  });
+
+  it("soft-passes when GitLab project is inaccessible without GITLAB_TOKEN", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: false, status: 404 });
+
+    const result = await verifyCommitEvidenceIsRemoteVisible(
+      "Done in https://gitlab.example.com/acme/private-repo/-/commit/abc1234",
+    );
+    expect(result.valid).toBe(true);
+    expect(result.softPass).toBe(true);
   });
 });

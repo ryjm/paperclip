@@ -36,16 +36,12 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { verifyGitHubEvidenceIsRemoteVisible } from "./github-evidence.js";
+import {
+  containsCommitOrReviewLink,
+  verifyCommitEvidenceIsRemoteVisible,
+} from "./github-evidence.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
-const GITHUB_COMMIT_OR_PR_LINK_RE =
-  /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:commit\/[0-9a-fA-F]{7,40}|pull\/\d+)(?:[/?#][^\s<>)\]}]*)?/;
-
-export function containsGitHubCommitOrPrLink(body: string | null | undefined) {
-  if (!body) return false;
-  return GITHUB_COMMIT_OR_PR_LINK_RE.test(body);
-}
 
 export function resolveDoneTransitionEvidenceComment(
   commentBody: string | null | undefined,
@@ -71,8 +67,8 @@ export function shouldWakeAgentForComment(
 }
 
 const DONE_EVIDENCE_REQUIRED_ERROR =
-  "Cannot mark issue done for code-labeled issues: latest completion comment must include a GitHub commit or pull request link " +
-  "(https://github.com/<owner>/<repo>/commit/<sha> or /pull/<number>). If this was non-code work, remove the code label before closing. " +
+  "Cannot mark issue done for code-labeled issues: latest completion comment must include a GitHub or GitLab commit, pull request, or merge request link " +
+  "(for example https://github.com/<owner>/<repo>/commit/<sha>, /pull/<number>, or https://gitlab.example.com/<group>/<project>/-/merge_requests/<number>). If this was non-code work, remove the code label before closing. " +
   "Otherwise keep the issue open until traceability is available.";
 
 export function buildDoneEvidenceRequiredDetails() {
@@ -82,11 +78,14 @@ export function buildDoneEvidenceRequiredDetails() {
     acceptedEvidence: {
       githubCommitUrl: "https://github.com/<owner>/<repo>/commit/<sha>",
       githubPullRequestUrl: "https://github.com/<owner>/<repo>/pull/<number>",
+      gitlabCommitUrl: "https://gitlab.example.com/<group>/<project>/-/commit/<sha>",
+      gitlabMergeRequestUrl:
+        "https://gitlab.example.com/<group>/<project>/-/merge_requests/<number>",
     },
     fallback: {
       nonCode: "Remove the code label before marking done when the task did not require repository changes.",
       missingTraceability:
-        "Keep the issue in_progress or mark it blocked until the latest comment includes a GitHub commit or pull request link.",
+        "Keep the issue in_progress or mark it blocked until the latest comment includes a GitHub or GitLab commit / PR / MR link.",
     },
   };
 }
@@ -102,7 +101,7 @@ export function buildDoneEvidenceUnreachableErrorResponse(remoteError: string) {
   return {
     error:
       "Cannot mark issue done: commit evidence is not reachable on the remote repository. " +
-      "Push the commit(s) to the tracked remote before closing, or use a pull request link instead.",
+      "Push the commit(s) to the tracked remote before closing, or use a pull request or merge request link instead.",
     details: {
       ...buildDoneEvidenceRequiredDetails(),
       remoteVerification: {
@@ -962,13 +961,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
           latestExistingCommentBody = latestComments[0]?.body ?? null;
         }
         const evidenceCommentBody = resolveDoneTransitionEvidenceComment(commentBody, latestExistingCommentBody);
-        if (!containsGitHubCommitOrPrLink(evidenceCommentBody)) {
+        if (!containsCommitOrReviewLink(evidenceCommentBody)) {
           res.status(422).json(buildDoneEvidenceRequiredErrorResponse());
           return;
         }
 
         // Verify commit evidence is actually reachable on the remote
-        const remoteCheck = await verifyGitHubEvidenceIsRemoteVisible(evidenceCommentBody!);
+        const remoteCheck = await verifyCommitEvidenceIsRemoteVisible(evidenceCommentBody!);
         if (!remoteCheck.valid) {
           res.status(422).json(buildDoneEvidenceUnreachableErrorResponse(remoteCheck.error!));
           return;

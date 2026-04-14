@@ -115,7 +115,7 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
-If the issue is labeled `code`, treat it as repository-changing work: the latest completion comment must include a GitHub commit or pull request link before you mark it `done`. Non-code tasks can close without GitHub evidence. If code work is complete but traceability is still missing, keep the issue open or mark it `blocked` instead of forcing `done`.
+If the issue is labeled `code`, treat it as repository-changing work: the latest completion comment must include a GitHub or GitLab commit / PR / MR link before you mark it `done`. Non-code tasks can close without repository evidence. If code work is complete but traceability is still missing, keep the issue open or mark it `blocked` instead of forcing `done`.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work.
 

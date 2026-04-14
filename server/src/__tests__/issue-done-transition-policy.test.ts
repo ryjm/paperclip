@@ -2,28 +2,36 @@ import { describe, expect, it } from "vitest";
 import {
   buildDoneEvidenceRequiredErrorResponse,
   buildDoneEvidenceUnreachableErrorResponse,
-  containsGitHubCommitOrPrLink,
   issueRequiresDoneEvidence,
   resolveDoneTransitionEvidenceComment,
 } from "../routes/issues.js";
+import { containsCommitOrReviewLink } from "../routes/github-evidence.js";
 
-describe("containsGitHubCommitOrPrLink", () => {
+describe("containsCommitOrReviewLink", () => {
   it("accepts GitHub commit links", () => {
     expect(
-      containsGitHubCommitOrPrLink("Implemented in https://github.com/acme/paperclip/commit/abc1234"),
+      containsCommitOrReviewLink("Implemented in https://github.com/acme/paperclip/commit/abc1234"),
     ).toBe(true);
   });
 
   it("accepts GitHub pull request links", () => {
+    expect(containsCommitOrReviewLink("Shipped in https://github.com/acme/paperclip/pull/42")).toBe(true);
+  });
+
+  it("accepts GitLab commit links", () => {
     expect(
-      containsGitHubCommitOrPrLink("Shipped in https://github.com/acme/paperclip/pull/42"),
+      containsCommitOrReviewLink("Implemented in https://gitlab.com/acme/paperclip/-/commit/abc1234"),
+    ).toBe(true);
+  });
+
+  it("accepts GitLab merge request links", () => {
+    expect(
+      containsCommitOrReviewLink("Shipped in https://gitlab.com/acme/paperclip/-/merge_requests/42"),
     ).toBe(true);
   });
 
   it("rejects other GitHub URLs", () => {
-    expect(
-      containsGitHubCommitOrPrLink("See https://github.com/acme/paperclip/issues/99"),
-    ).toBe(false);
+    expect(containsCommitOrReviewLink("See https://github.com/acme/paperclip/issues/99")).toBe(false);
   });
 });
 
@@ -31,19 +39,19 @@ describe("resolveDoneTransitionEvidenceComment", () => {
   it("prefers the new transition comment when provided", () => {
     expect(
       resolveDoneTransitionEvidenceComment(
-        "Done via https://github.com/acme/paperclip/pull/77",
+        "Done via https://gitlab.com/acme/paperclip/-/merge_requests/77",
         "Old note without links",
       ),
-    ).toContain("/pull/77");
+    ).toContain("/merge_requests/77");
   });
 
   it("falls back to the latest existing comment", () => {
     expect(
       resolveDoneTransitionEvidenceComment(
         undefined,
-        "Latest: https://github.com/acme/paperclip/commit/def5678",
+        "Latest: https://gitlab.com/acme/paperclip/-/commit/def5678",
       ),
-    ).toContain("/commit/def5678");
+    ).toContain("/-/commit/def5678");
   });
 
   it("returns null when no usable comment exists", () => {
@@ -61,6 +69,9 @@ describe("buildDoneEvidenceRequiredErrorResponse", () => {
       acceptedEvidence: {
         githubCommitUrl: "https://github.com/<owner>/<repo>/commit/<sha>",
         githubPullRequestUrl: "https://github.com/<owner>/<repo>/pull/<number>",
+        gitlabCommitUrl: "https://gitlab.example.com/<group>/<project>/-/commit/<sha>",
+        gitlabMergeRequestUrl:
+          "https://gitlab.example.com/<group>/<project>/-/merge_requests/<number>",
       },
       fallback: {
         nonCode: "Remove the code label before marking done when the task did not require repository changes.",

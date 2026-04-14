@@ -51,7 +51,7 @@ If the task scope changes mid-flight, update the label before closeout so the is
 
 ## Closeout Evidence Pattern
 
-For `code`-labeled tasks, the latest completion comment must include a GitHub commit or pull request link before the issue can move to `done`.
+For `code`-labeled tasks, the latest completion comment must include a GitHub or GitLab commit / PR / MR link before the issue can move to `done`.
 
 Accepted evidence:
 
