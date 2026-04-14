@@ -160,6 +160,12 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
 };
+type IssueWithLabelsAndRelations = IssueWithLabels & IssueRelationSummaryMap;
+type IssueRelationSummaryLoader = (
+  companyId: string,
+  issueIds: string[],
+  dbOrTx: DbReader,
+) => Promise<Map<string, IssueRelationSummaryMap>>;
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
@@ -529,6 +535,45 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
   });
 }
 
+async function withIssueRelations(
+  dbOrTx: DbReader,
+  rows: IssueWithLabels[],
+  loadIssueRelationSummaryMap: IssueRelationSummaryLoader,
+): Promise<IssueWithLabelsAndRelations[]> {
+  if (rows.length === 0) return [];
+
+  const rowsByCompany = new Map<string, string[]>();
+  for (const row of rows) {
+    const issueIds = rowsByCompany.get(row.companyId) ?? [];
+    issueIds.push(row.id);
+    rowsByCompany.set(row.companyId, issueIds);
+  }
+
+  const relationMaps = new Map<string, Map<string, IssueRelationSummaryMap>>();
+  for (const [companyId, issueIds] of rowsByCompany.entries()) {
+    relationMaps.set(companyId, await loadIssueRelationSummaryMap(companyId, issueIds, dbOrTx));
+  }
+
+  return rows.map((row) => {
+    const relationMap = relationMaps.get(row.companyId);
+    const relations = relationMap?.get(row.id) ?? { blockedBy: [], blocks: [] };
+    return {
+      ...row,
+      blockedBy: relations.blockedBy,
+      blocks: relations.blocks,
+    };
+  });
+}
+
+async function withIssueMetadata(
+  dbOrTx: DbReader,
+  rows: IssueRow[],
+  loadIssueRelationSummaryMap: IssueRelationSummaryLoader,
+): Promise<IssueWithLabelsAndRelations[]> {
+  const labeledRows = await withIssueLabels(dbOrTx, rows);
+  return withIssueRelations(dbOrTx, labeledRows, loadIssueRelationSummaryMap);
+}
+
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 
 type ExecutionLockRow = {
@@ -649,7 +694,7 @@ export function issueService(db: Db) {
       .where(eq(issues.id, id))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const [enriched] = await withIssueLabels(db, [row]);
+    const [enriched] = await withIssueMetadata(db, [row], getIssueRelationSummaryMap);
     return enriched;
   }
 
@@ -660,7 +705,7 @@ export function issueService(db: Db) {
       .where(eq(issues.identifier, identifier.toUpperCase()))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const [enriched] = await withIssueLabels(db, [row]);
+    const [enriched] = await withIssueMetadata(db, [row], getIssueRelationSummaryMap);
     return enriched;
   }
 
@@ -1636,7 +1681,7 @@ export function issueService(db: Db) {
             tx,
           );
         }
-        const [enriched] = await withIssueLabels(tx, [issue]);
+        const [enriched] = await withIssueMetadata(tx, [issue], getIssueRelationSummaryMap);
         return enriched;
       });
     },
@@ -1776,7 +1821,7 @@ export function issueService(db: Db) {
             tx,
           );
         }
-        const [enriched] = await withIssueLabels(tx, [updated]);
+        const [enriched] = await withIssueMetadata(tx, [updated], getIssueRelationSummaryMap);
         return enriched;
       };
 
