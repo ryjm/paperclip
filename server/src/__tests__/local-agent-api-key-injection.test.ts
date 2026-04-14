@@ -438,6 +438,15 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       role: "platform",
       status: "active",
       adapterType: input.adapterType,
+      runtimeConfig:
+        input.wake.source === "timer"
+          ? {
+              heartbeat: {
+                enabled: true,
+                intervalSec: 60,
+              },
+            }
+          : {},
       adapterConfig: {
         command: commandPath,
         cwd: workspace,
