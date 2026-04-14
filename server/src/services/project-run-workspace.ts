@@ -10,7 +10,7 @@ const WORKSPACE_METADATA_FILENAME = "paperclip-workspace.json";
 const PATH_SEGMENT_RE = /[^a-zA-Z0-9._-]+/g;
 const MAX_SEGMENT_PREFIX_LENGTH = 32;
 
-type ManagedWorkspaceMode = "git_worktree" | "directory_copy";
+type ManagedWorkspaceMode = "git_worktree" | "git_clone" | "directory_copy";
 
 export interface TaskScopedProjectWorkspace {
   cwd: string;
@@ -143,6 +143,77 @@ async function detectInterruptedOperation(repoRoot: string): Promise<"rebase" | 
   return null;
 }
 
+function normalizeGitRemoteUrl(url: string | null): string | null {
+  const trimmed = readNonEmptyString(url);
+  if (!trimmed) return null;
+
+  const sshMatch = trimmed.match(/^git@([^:]+):(.+)$/);
+  if (sshMatch) {
+    const host = sshMatch[1]!.toLowerCase();
+    const repoPath = sshMatch[2]!.replace(/\/+$/, "").replace(/\.git$/i, "");
+    return `https://${host}/${repoPath}`;
+  }
+
+  const sshProtoMatch = trimmed.match(/^ssh:\/\/git@([^/]+)\/(.+)$/);
+  if (sshProtoMatch) {
+    const host = sshProtoMatch[1]!.toLowerCase();
+    const repoPath = sshProtoMatch[2]!.replace(/\/+$/, "").replace(/\.git$/i, "");
+    return `https://${host}/${repoPath}`;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "file:") {
+      return path.resolve(decodeURIComponent(parsed.pathname));
+    }
+    const normalizedPath = parsed.pathname.replace(/\/+$/, "").replace(/\.git$/i, "");
+    return `${parsed.protocol}//${parsed.host.toLowerCase()}${normalizedPath}`;
+  } catch {
+    if (trimmed.startsWith("/") || trimmed.startsWith(".")) {
+      return path.resolve(trimmed);
+    }
+    return trimmed.replace(/\/+$/, "").replace(/\.git$/i, "");
+  }
+}
+
+async function readGitRemoteUrl(cwd: string, remoteName: string) {
+  const remote = await tryRunGit(cwd, ["remote", "get-url", remoteName]);
+  return readNonEmptyString(remote?.stdout);
+}
+
+async function detectExistingManagedCheckoutKind(
+  checkoutRoot: string,
+): Promise<Extract<ManagedWorkspaceMode, "git_worktree" | "git_clone"> | null> {
+  const existingTopLevel = await tryRunGit(checkoutRoot, ["rev-parse", "--show-toplevel"]);
+  if (!existingTopLevel?.stdout || path.resolve(existingTopLevel.stdout) !== path.resolve(checkoutRoot)) {
+    return null;
+  }
+
+  const gitEntry = await fs.lstat(path.join(checkoutRoot, ".git")).catch(() => null);
+  if (gitEntry?.isDirectory()) return "git_clone";
+  if (gitEntry?.isFile()) return "git_worktree";
+  return null;
+}
+
+async function resolvePublishSafeIsolation(input: {
+  repoRoot: string;
+  repoUrl: string | null;
+}) {
+  const trackedRepoUrl = normalizeGitRemoteUrl(input.repoUrl);
+  if (!trackedRepoUrl) {
+    return {
+      requiresClone: false,
+      sourceOriginUrl: null,
+    };
+  }
+
+  const sourceOriginUrl = await readGitRemoteUrl(input.repoRoot, "origin");
+  return {
+    requiresClone: normalizeGitRemoteUrl(sourceOriginUrl) !== trackedRepoUrl,
+    sourceOriginUrl,
+  };
+}
+
 async function ensureDirectoryAbsent(dir: string) {
   await fs.rm(dir, { recursive: true, force: true });
 }
@@ -172,6 +243,7 @@ async function ensureGitWorktree(input: {
       checkoutRoot,
       branchName,
       created: false,
+      mode: "git_worktree" as const,
     };
   }
 
@@ -193,6 +265,74 @@ async function ensureGitWorktree(input: {
     checkoutRoot,
     branchName,
     created: true,
+    mode: "git_worktree" as const,
+  };
+}
+
+async function configureGitCloneBranch(input: {
+  checkoutRoot: string;
+  repoUrl: string;
+  branchName: string;
+}) {
+  await runGit(input.checkoutRoot, ["remote", "set-url", "origin", input.repoUrl]);
+  await runGit(input.checkoutRoot, ["config", `branch.${input.branchName}.remote`, "origin"]);
+  await runGit(
+    input.checkoutRoot,
+    ["config", `branch.${input.branchName}.merge`, `refs/heads/${input.branchName}`],
+  );
+  await runGit(input.checkoutRoot, ["config", `branch.${input.branchName}.pushRemote`, "origin"]);
+}
+
+async function ensureGitCloneWorkspace(input: {
+  repoRoot: string;
+  managedRoot: string;
+  agentId: string;
+  workspaceId: string;
+  taskKey: string | null;
+  projectId: string | null;
+  repoUrl: string;
+}) {
+  const checkoutRoot = path.join(input.managedRoot, "repo");
+  const branchName = buildManagedBranchName(input);
+  const existingKind = await detectExistingManagedCheckoutKind(checkoutRoot);
+  if (existingKind === "git_clone") {
+    await configureGitCloneBranch({
+      checkoutRoot,
+      repoUrl: input.repoUrl,
+      branchName,
+    });
+    return {
+      checkoutRoot,
+      branchName,
+      created: false,
+      mode: "git_clone" as const,
+    };
+  }
+  if (existingKind === "git_worktree") {
+    return {
+      checkoutRoot,
+      branchName,
+      created: false,
+      mode: "git_worktree" as const,
+    };
+  }
+
+  await ensureDirectoryAbsent(checkoutRoot);
+  await fs.mkdir(input.managedRoot, { recursive: true });
+  const headSha = (await runGit(input.repoRoot, ["rev-parse", "HEAD"])).stdout;
+  await runGit(input.managedRoot, ["clone", "--no-local", "--no-checkout", input.repoRoot, checkoutRoot]);
+  await runGit(checkoutRoot, ["checkout", "-B", branchName, headSha]);
+  await configureGitCloneBranch({
+    checkoutRoot,
+    repoUrl: input.repoUrl,
+    branchName,
+  });
+
+  return {
+    checkoutRoot,
+    branchName,
+    created: true,
+    mode: "git_clone" as const,
   };
 }
 
@@ -234,16 +374,31 @@ export async function ensureTaskScopedProjectWorkspace(input: {
   if (gitWorkspace) {
     const dirtyEntries = await listDirtyEntries(gitWorkspace.repoRoot);
     const interruptedOp = await detectInterruptedOperation(gitWorkspace.repoRoot);
-    const { checkoutRoot, branchName, created } = await ensureGitWorktree({
+    const publishSafeIsolation = await resolvePublishSafeIsolation({
       repoRoot: gitWorkspace.repoRoot,
-      managedRoot,
-      agentId: input.agentId,
-      workspaceId: input.workspaceId,
-      taskKey: input.taskKey,
-      projectId: input.projectId,
+      repoUrl: input.repoUrl,
     });
+    const isolatedGitWorkspace = publishSafeIsolation.requiresClone && input.repoUrl
+      ? await ensureGitCloneWorkspace({
+          repoRoot: gitWorkspace.repoRoot,
+          managedRoot,
+          agentId: input.agentId,
+          workspaceId: input.workspaceId,
+          taskKey: input.taskKey,
+          projectId: input.projectId,
+          repoUrl: input.repoUrl,
+        })
+      : await ensureGitWorktree({
+          repoRoot: gitWorkspace.repoRoot,
+          managedRoot,
+          agentId: input.agentId,
+          workspaceId: input.workspaceId,
+          taskKey: input.taskKey,
+          projectId: input.projectId,
+        });
+    const { checkoutRoot, branchName, created, mode } = isolatedGitWorkspace;
     await writeWorkspaceMetadata(managedRoot, {
-      mode: "git_worktree",
+      mode,
       agentId: input.agentId,
       projectId: input.projectId,
       taskKey: input.taskKey,
@@ -266,12 +421,18 @@ export async function ensureTaskScopedProjectWorkspace(input: {
     const cwd = candidateExists ? candidateCwd : checkoutRoot;
     const warnings: string[] = [];
     if (created) {
-      warnings.push(
-        `Using isolated git worktree "${cwd}" for project workspace "${input.projectCwd}".`,
-      );
+      if (mode === "git_clone") {
+        warnings.push(
+          `Using isolated git clone "${cwd}" for project workspace "${input.projectCwd}" because shared remote "${publishSafeIsolation.sourceOriginUrl ?? "missing"}" does not match tracked repo "${input.repoUrl}".`,
+        );
+      } else {
+        warnings.push(
+          `Using isolated git worktree "${cwd}" for project workspace "${input.projectCwd}".`,
+        );
+      }
       if (interruptedOp) {
         warnings.push(
-          `Shared project workspace "${input.projectCwd}" has an interrupted ${interruptedOp} in progress. The isolated worktree is unaffected, but the shared checkout needs manual cleanup before direct use.`,
+          `Shared project workspace "${input.projectCwd}" has an interrupted ${interruptedOp} in progress. The isolated ${mode === "git_clone" ? "clone" : "worktree"} is unaffected, but the shared checkout needs manual cleanup before direct use.`,
         );
       }
       if (dirtyEntries.length > 0) {
@@ -279,6 +440,10 @@ export async function ensureTaskScopedProjectWorkspace(input: {
           `Shared project workspace "${input.projectCwd}" has ${dirtyEntries.length} uncommitted change(s); they were left in the shared checkout and not copied into the isolated task workspace.`,
         );
       }
+    } else if (mode === "git_worktree" && publishSafeIsolation.requiresClone) {
+      warnings.push(
+        `Reusing legacy isolated git worktree "${cwd}" for project workspace "${input.projectCwd}". Its inherited remote config may still require manual repair until the workspace is recreated as a dedicated clone.`,
+      );
     }
     if (!candidateExists && gitWorkspace.relativeCwd) {
       warnings.push(
@@ -287,7 +452,7 @@ export async function ensureTaskScopedProjectWorkspace(input: {
     }
     return {
       cwd,
-      mode: "git_worktree",
+      mode,
       rootDir: managedRoot,
       warnings,
     };
