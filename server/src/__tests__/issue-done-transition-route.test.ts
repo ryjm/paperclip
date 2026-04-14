@@ -273,6 +273,74 @@ describe("issue done transition route", () => {
     expect(res.body.status).toBe("done");
   });
 
+  it("rejects done when PR evidence is open (not merged)", async () => {
+    const issue = await createCodeIssue();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        merged: false,
+        merged_at: null,
+        draft: false,
+        state: "open",
+        base: { ref: "main" },
+      }),
+    });
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "WIP in https://github.com/acme/paperclip/pull/42",
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("not landed");
+      expect(res.body.details.landingVerification).toMatchObject({
+        result: "not_landed",
+      });
+      expect(res.body.details.landingVerification.detail).toContain("not merged yet");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects done when PR evidence is a draft", async () => {
+    const issue = await createCodeIssue();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        merged: false,
+        merged_at: null,
+        draft: true,
+        state: "open",
+        base: { ref: "main" },
+      }),
+    });
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "Draft at https://github.com/acme/paperclip/pull/42",
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("not landed");
+      expect(res.body.details.landingVerification).toMatchObject({
+        result: "not_landed",
+      });
+      expect(res.body.details.landingVerification.detail).toContain("not merged yet");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("rejects done when PR evidence is not merged into the tracked base branch", async () => {
     const issue = await createTrackedRepoCodeIssue();
     const originalFetch = globalThis.fetch;

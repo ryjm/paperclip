@@ -220,6 +220,69 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
     expect(result.unreachableRefs![0].sha).toBe("bbb2222");
   });
 
+  it("rejects when PR is open (not merged)", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        merged: false,
+        merged_at: null,
+        draft: false,
+        state: "open",
+        base: { ref: "main" },
+      }),
+    });
+
+    const result = await verifyGitHubEvidenceIsRemoteVisible(
+      "WIP in https://github.com/acme/paperclip/pull/42",
+    );
+    expect(result.valid).toBe(false);
+    expect(result.failureKind).toBe("not_landed");
+    expect(result.error).toContain("not merged yet");
+  });
+
+  it("rejects when PR is draft", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        merged: false,
+        merged_at: null,
+        draft: true,
+        state: "open",
+        base: { ref: "main" },
+      }),
+    });
+
+    const result = await verifyGitHubEvidenceIsRemoteVisible(
+      "Draft at https://github.com/acme/paperclip/pull/42",
+    );
+    expect(result.valid).toBe(false);
+    expect(result.failureKind).toBe("not_landed");
+    expect(result.error).toContain("not merged yet");
+  });
+
+  it("rejects when PR was closed without merging", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        merged: false,
+        merged_at: null,
+        draft: false,
+        state: "closed",
+        base: { ref: "main" },
+      }),
+    });
+
+    const result = await verifyGitHubEvidenceIsRemoteVisible(
+      "See https://github.com/acme/paperclip/pull/42",
+    );
+    expect(result.valid).toBe(false);
+    expect(result.failureKind).toBe("not_landed");
+    expect(result.error).toContain("closed without merging");
+  });
+
   it("rejects when a PR is not merged into the tracked base branch", async () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce({
       ok: true,
