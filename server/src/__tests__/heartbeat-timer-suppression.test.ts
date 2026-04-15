@@ -7,12 +7,16 @@ import { asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   applyPendingMigrations,
   companies,
   createDb,
   ensurePostgresDatabase,
+  heartbeatRunEvents,
+  heartbeatRuns,
   issues,
 } from "@paperclipai/db";
 import {
@@ -220,6 +224,10 @@ describe("heartbeat timer suppression", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(agentTaskSessions);
+    await db.delete(agentRuntimeState);
+    await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(agents);
@@ -374,5 +382,110 @@ describe("heartbeat timer suppression", () => {
     expect(wakeups).toHaveLength(2);
     expect(wakeups.every((row) => row.reason === "heartbeat.blocked_only_inbox")).toBe(true);
     expect(wakeups[0]?.payload).not.toEqual(wakeups[1]?.payload);
+  });
+
+  it("skips timer wakeups when the company has no non-terminal issues", async () => {
+    await seedTimerAgent();
+
+    const result = await heartbeat().tickTimers(new Date("2026-03-23T12:00:30.000Z"));
+
+    expect(result).toMatchObject({
+      checked: 1,
+      enqueued: 0,
+      skipped: 1,
+    });
+
+    const wakeups = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .orderBy(asc(agentWakeupRequests.requestedAt));
+
+    expect(wakeups).toEqual([
+      {
+        status: "skipped",
+        reason: "heartbeat.empty_company_queue",
+        payload: {
+          suppressionStateKey: "empty_company_queue",
+        },
+      },
+    ]);
+  });
+
+  it("does not write duplicate empty-queue skip rows while the company stays idle", async () => {
+    const agentId = await seedTimerAgent();
+
+    await heartbeat().tickTimers(new Date("2026-03-23T12:00:30.000Z"));
+    const secondTick = await heartbeat().tickTimers(new Date("2026-03-23T12:01:35.000Z"));
+
+    expect(secondTick).toMatchObject({
+      checked: 1,
+      enqueued: 0,
+      skipped: 1,
+    });
+
+    const wakeups = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(asc(agentWakeupRequests.requestedAt));
+
+    expect(wakeups).toEqual([
+      {
+        reason: "heartbeat.empty_company_queue",
+      },
+    ]);
+  });
+
+  it("resumes timer wakeups after new company work appears", async () => {
+    const agentId = await seedTimerAgent();
+
+    await heartbeat().tickTimers(new Date("2026-03-23T12:00:30.000Z"));
+
+    const currentIssueNumber = issueNumber;
+    issueNumber += 1;
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: `Fresh Work ${currentIssueNumber}`,
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: agentId,
+      issueNumber: currentIssueNumber,
+      identifier: `HTS-${currentIssueNumber}`,
+    });
+
+    const secondTick = await heartbeat().tickTimers(new Date("2026-03-23T12:01:35.000Z"));
+
+    expect(secondTick).toMatchObject({
+      checked: 1,
+      enqueued: 1,
+      skipped: 0,
+    });
+
+    const wakeups = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        status: agentWakeupRequests.status,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(asc(agentWakeupRequests.requestedAt));
+
+    expect(wakeups).toEqual([
+      {
+        reason: "heartbeat.empty_company_queue",
+        status: "skipped",
+      },
+      {
+        reason: "heartbeat_timer",
+        status: "claimed",
+      },
+    ]);
   });
 });
