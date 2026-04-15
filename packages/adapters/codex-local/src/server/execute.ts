@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
@@ -27,6 +28,7 @@ import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const CODEX_MANAGED_SKILL_FINGERPRINT_KEY = "paperclipManagedSkillFingerprint";
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 
@@ -68,6 +70,34 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
   if (openAiCompatibleBiller === "openrouter") return "openrouter";
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
+}
+
+async function buildManagedSkillFingerprint(
+  entries: Array<{ key: string; runtimeName: string; source: string }>,
+  desiredSkillNames: string[],
+): Promise<string> {
+  const desiredSet = new Set(desiredSkillNames);
+  const selectedEntries = entries.filter((entry) => desiredSet.has(entry.key));
+  const normalizedEntries = await Promise.all(
+    selectedEntries.map(async (entry) => ({
+      key: entry.key,
+      runtimeName: entry.runtimeName,
+      source: await fs.realpath(entry.source).catch(() => path.resolve(entry.source)),
+    })),
+  );
+  normalizedEntries.sort(
+    (left, right) =>
+      left.key.localeCompare(right.key) ||
+      left.runtimeName.localeCompare(right.runtimeName) ||
+      left.source.localeCompare(right.source),
+  );
+
+  const hash = createHash("sha256");
+  hash.update("paperclip-codex-managed-skill-fingerprint:v1\n");
+  for (const entry of normalizedEntries) {
+    hash.update(`skill:${entry.key}:${entry.runtimeName}:${entry.source}\n`);
+  }
+  return hash.digest("hex");
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
@@ -260,6 +290,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
+  const managedSkillFingerprint = await buildManagedSkillFingerprint(codexSkillEntries, desiredSkillNames);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const preparedManagedCodexHome =
     configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
@@ -393,14 +424,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimeManagedSkillFingerprint = asString(
+    runtimeSessionParams[CODEX_MANAGED_SKILL_FINGERPRINT_KEY],
+    "",
+  );
+  const matchesRuntimeSessionCwd =
+    runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd);
+  const hasMatchingManagedSkillFingerprint =
+    runtimeManagedSkillFingerprint.length > 0 &&
+    runtimeManagedSkillFingerprint === managedSkillFingerprint;
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
+    matchesRuntimeSessionCwd &&
+    hasMatchingManagedSkillFingerprint;
   const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
+  if (runtimeSessionId && !matchesRuntimeSessionCwd) {
     await onLog(
       "stdout",
       `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+    );
+  } else if (runtimeSessionId && runtimeManagedSkillFingerprint.length === 0) {
+    await onLog(
+      "stdout",
+      `[paperclip] Codex session "${runtimeSessionId}" has no managed-skill fingerprint and will not be resumed.\n`,
+    );
+  } else if (runtimeSessionId && !hasMatchingManagedSkillFingerprint) {
+    await onLog(
+      "stdout",
+      `[paperclip] Codex session "${runtimeSessionId}" was saved with different managed skills and will not be resumed.\n`,
     );
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -550,11 +601,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
-    const resolvedSessionId = attempt.parsed.sessionId ?? runtimeSessionId ?? runtime.sessionId ?? null;
+    const resolvedSessionId = attempt.parsed.sessionId ?? sessionId ?? null;
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
         cwd,
+        [CODEX_MANAGED_SKILL_FINGERPRINT_KEY]: managedSkillFingerprint,
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
