@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   findMentionedProjectIds: vi.fn(),
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
+  listComments: vi.fn(),
   listAttachments: vi.fn(),
 }));
 
@@ -138,6 +139,7 @@ describe("issue goal context routes", () => {
       latestCommentAt: null,
     });
     mockIssueService.getComment.mockResolvedValue(null);
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockProjectService.getById.mockResolvedValue({
       id: legacyProjectLinkedIssue.projectId,
@@ -237,5 +239,49 @@ describe("issue goal context routes", () => {
         identifier: "PAP-580",
       }),
     ]);
+  });
+
+  it("surfaces source repo hints on issue detail and heartbeat context", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      description:
+        "Investigate /home/jake/vault/projects/paperclip/server/src/routes/issues.ts and /api/issues/{id}/heartbeat-context.",
+    });
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "66666666-6666-4666-8666-666666666666",
+        companyId: "company-1",
+        issueId: legacyProjectLinkedIssue.id,
+        authorAgentId: null,
+        authorUserId: "user-1",
+        body: "The fix is in /home/jake/vault/projects/paperclip/ui/src/App.tsx.",
+        createdAt: new Date("2026-03-25T00:00:00Z"),
+        updatedAt: new Date("2026-03-25T00:00:00Z"),
+      },
+    ]);
+
+    const [issueRes, heartbeatRes] = await Promise.all([
+      request(await createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111"),
+      request(await createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context"),
+    ]);
+
+    expect(issueRes.status).toBe(200);
+    expect(issueRes.body.sourceRepoHint).toEqual(
+      expect.objectContaining({
+        repoPath: "/home/jake/vault/projects/paperclip",
+        reason: "issue text mentions the local Paperclip repo path",
+      }),
+    );
+    expect(issueRes.body.sourceRepoHint.signals).toContain(
+      "issue text mentions the local Paperclip repo path",
+    );
+
+    expect(heartbeatRes.status).toBe(200);
+    expect(heartbeatRes.body.sourceRepoHint).toEqual(
+      expect.objectContaining({
+        repoPath: "/home/jake/vault/projects/paperclip",
+        reason: "issue text mentions the local Paperclip repo path",
+      }),
+    );
   });
 });

@@ -78,6 +78,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds } from "@paperclipai/shared";
+import { detectIssueSourceRepoHint } from "./source-repo-hints.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -94,6 +95,7 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_SOURCE_REPO_HINT_COMMENTS = 8;
 const execFile = promisify(execFileCallback);
 const ACTIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
@@ -1596,6 +1598,7 @@ async function buildPaperclipWakePayload(input: {
         id: string;
         identifier: string | null;
         title: string;
+        description?: string | null;
         status: string;
         priority: string;
       }
@@ -1612,6 +1615,7 @@ async function buildPaperclipWakePayload(input: {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
             status: issues.status,
             priority: issues.priority,
           })
@@ -1685,6 +1689,31 @@ async function buildPaperclipWakePayload(input: {
     });
   }
 
+  const sourceRepoHint = detectIssueSourceRepoHint({
+    title: issueSummary?.title,
+    description: issueSummary?.description ?? null,
+    commentBodies: commentRows.map((comment) => comment.body),
+  }) ?? (
+    issueSummary?.id
+      ? detectIssueSourceRepoHint({
+          title: issueSummary.title,
+          description: issueSummary.description ?? null,
+          commentBodies: await input.db
+            .select({ body: issueComments.body })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, input.companyId),
+                eq(issueComments.issueId, issueSummary.id),
+              ),
+            )
+            .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+            .limit(MAX_SOURCE_REPO_HINT_COMMENTS)
+            .then((rows) => rows.map((row) => row.body)),
+        })
+      : null
+  );
+
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     issue: issueSummary
@@ -1706,6 +1735,7 @@ async function buildPaperclipWakePayload(input: {
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
+    sourceRepoHint,
     truncated,
     fallbackFetchNeeded: truncated || missingCommentCount > 0,
   };
@@ -2014,6 +2044,7 @@ export function heartbeatService(db: Db) {
         id: issues.id,
         identifier: issues.identifier,
         title: issues.title,
+        description: issues.description,
         status: issues.status,
         priority: issues.priority,
         projectId: issues.projectId,
@@ -4069,6 +4100,7 @@ export function heartbeatService(db: Db) {
           id: issueContext.id,
           identifier: issueContext.identifier,
           title: issueContext.title,
+          description: issueContext.description,
           status: issueContext.status,
           priority: issueContext.priority,
           projectId: issueContext.projectId,
@@ -4086,6 +4118,7 @@ export function heartbeatService(db: Db) {
             id: issueRef.id,
             identifier: issueRef.identifier,
             title: issueRef.title,
+            description: issueRef.description,
             status: issueRef.status,
             priority: issueRef.priority,
           }

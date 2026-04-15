@@ -224,6 +224,12 @@ type PaperclipWakeIssue = {
   priority: string | null;
 };
 
+type PaperclipSourceRepoHint = {
+  repoPath: string | null;
+  reason: string | null;
+  signals: string[];
+};
+
 type PaperclipWakeExecutionPrincipal = {
   type: "agent" | "user" | null;
   agentId: string | null;
@@ -253,6 +259,7 @@ type PaperclipWakeComment = {
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  sourceRepoHint: PaperclipSourceRepoHint | null;
   checkedOutByHarness: boolean;
   executionStage: PaperclipWakeExecutionStage | null;
   commentIds: string[];
@@ -342,6 +349,23 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
+function normalizePaperclipSourceRepoHint(value: unknown): PaperclipSourceRepoHint | null {
+  const hint = parseObject(value);
+  const repoPath = asString(hint.repoPath, "").trim() || null;
+  const reason = asString(hint.reason, "").trim() || null;
+  const signals = Array.isArray(hint.signals)
+    ? hint.signals
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+  if (!repoPath && !reason && signals.length === 0) return null;
+  return {
+    repoPath,
+    reason,
+    signals,
+  };
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
@@ -356,6 +380,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => entry.trim())
     : [];
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
+  const sourceRepoHint = normalizePaperclipSourceRepoHint(payload.sourceRepoHint);
 
   if (comments.length === 0 && commentIds.length === 0 && !executionStage && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
@@ -364,6 +389,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   return {
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    sourceRepoHint,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     executionStage,
     commentIds,
@@ -433,6 +459,12 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.sourceRepoHint?.repoPath) {
+    const reasonSuffix = normalized.sourceRepoHint.reason
+      ? ` (${normalized.sourceRepoHint.reason})`
+      : "";
+    lines.push(`- source repo hint: ${normalized.sourceRepoHint.repoPath}${reasonSuffix}`);
   }
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");

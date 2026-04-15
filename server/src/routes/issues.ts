@@ -85,8 +85,10 @@ import {
   verifyGitHubEvidenceIsRemoteVisible,
   type GitHubEvidenceTarget,
 } from "./github-evidence.js";
+import { detectIssueSourceRepoHint } from "../services/source-repo-hints.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const SOURCE_REPO_HINT_COMMENT_LIMIT = 8;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -567,6 +569,27 @@ export function issueRoutes(
     return parsed;
   }
 
+  async function resolveIssueSourceRepoHint(input: {
+    issueId: string;
+    title: string;
+    description?: string | null;
+    wakeCommentBody?: string | null;
+  }) {
+    const recentComments = await svc.listComments(input.issueId, {
+      order: "desc",
+      limit: SOURCE_REPO_HINT_COMMENT_LIMIT,
+    });
+    const commentBodies = [
+      input.wakeCommentBody ?? null,
+      ...recentComments.map((comment) => comment.body),
+    ];
+    return detectIssueSourceRepoHint({
+      title: input.title,
+      description: input.description ?? null,
+      commentBodies,
+    });
+  }
+
   async function runSingleFileUpload(req: Request, res: Response) {
     await new Promise<void>((resolve, reject) => {
       upload.single("file")(req, res, (err: unknown) => {
@@ -909,7 +932,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [ancestors, project, goal, mentionedProjectIds, documentPayload] = await Promise.all([
+    const [ancestors, project, goal, mentionedProjectIds, documentPayload, sourceRepoHint] = await Promise.all([
       svc.getAncestors(issue.id),
       issue.projectId ? projectsSvc.getById(issue.projectId) : null,
       issue.goalId
@@ -919,6 +942,11 @@ export function issueRoutes(
           : null,
       svc.findMentionedProjectIds(issue.id),
       documentsSvc.getIssueDocumentPayload(issue),
+      resolveIssueSourceRepoHint({
+        issueId: issue.id,
+        title: issue.title,
+        description: issue.description,
+      }),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -937,6 +965,7 @@ export function issueRoutes(
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
+      sourceRepoHint,
     });
   });
 
@@ -953,8 +982,9 @@ export function issueRoutes(
       typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0
         ? req.query.wakeCommentId.trim()
         : null;
+    const wakeCommentPromise = wakeCommentId ? svc.getComment(wakeCommentId) : Promise.resolve(null);
 
-    const [ancestors, project, goal, commentCursor, wakeComment] = await Promise.all([
+    const [ancestors, project, goal, commentCursor, wakeComment, sourceRepoHint] = await Promise.all([
       svc.getAncestors(issue.id),
       issue.projectId ? projectsSvc.getById(issue.projectId) : null,
       issue.goalId
@@ -963,7 +993,14 @@ export function issueRoutes(
           ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
           : null,
       svc.getCommentCursor(issue.id),
-      wakeCommentId ? svc.getComment(wakeCommentId) : null,
+      wakeCommentPromise,
+      wakeCommentPromise.then((comment) =>
+        resolveIssueSourceRepoHint({
+          issueId: issue.id,
+          title: issue.title,
+          description: issue.description,
+          wakeCommentBody: comment?.issueId === issue.id ? comment.body : null,
+        })),
     ]);
 
     res.json({
@@ -1006,6 +1043,7 @@ export function issueRoutes(
           }
         : null,
       commentCursor,
+      sourceRepoHint,
       wakeComment:
         wakeComment && wakeComment.issueId === issue.id
           ? wakeComment

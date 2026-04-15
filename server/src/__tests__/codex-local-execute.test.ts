@@ -310,6 +310,11 @@ describe("codex execute", () => {
               status: "in_progress",
               priority: "medium",
             },
+            sourceRepoHint: {
+              repoPath: "/home/jake/vault/projects/paperclip",
+              reason: "issue text mentions the local Paperclip repo path",
+              signals: ["issue text mentions the local Paperclip repo path"],
+            },
             commentIds: ["comment-1", "comment-2"],
             latestCommentId: "comment-2",
             comments: [
@@ -351,6 +356,10 @@ describe("codex execute", () => {
       expect(capture.paperclipWakePayloadJson).not.toBeNull();
       expect(JSON.parse(capture.paperclipWakePayloadJson ?? "{}")).toMatchObject({
         reason: "issue_commented",
+        sourceRepoHint: {
+          repoPath: "/home/jake/vault/projects/paperclip",
+          reason: "issue text mentions the local Paperclip repo path",
+        },
         latestCommentId: "comment-2",
         commentIds: ["comment-1", "comment-2"],
       });
@@ -359,6 +368,9 @@ describe("codex execute", () => {
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain(
         "acknowledge the latest comment and explain how it changes your next action.",
+      );
+      expect(capture.prompt).toContain(
+        "- source repo hint: /home/jake/vault/projects/paperclip (issue text mentions the local Paperclip repo path)",
       );
       expect(capture.prompt).toContain("First comment");
       expect(capture.prompt).toContain("Second comment");
