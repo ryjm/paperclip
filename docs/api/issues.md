@@ -68,9 +68,11 @@ The optional `comment` field adds a comment in the same call.
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `projectId`, `goalId`, `parentId`, `billingCode`, `labelIds`, `hiddenAt`.
 
-`labelIds` controls issue classification. If the issue is labeled `code` when you move it to `done`, the latest completion comment must include a GitHub commit link or pull request link. Paperclip checks the PATCH comment first; if no comment is supplied in that request, it falls back to the current latest issue comment.
+`labelIds` controls issue classification. If the issue is labeled `code` when you move it to `done`, or if the issue belongs to a project with a repo-connected workspace (`repoUrl` set), the latest completion comment must include a GitHub commit link or pull request link. Paperclip checks the PATCH comment first; if no comment is supplied in that request, it falls back to the current latest issue comment.
 
 Non-code issues can close without GitHub evidence. If the task did not require repository changes, remove the `code` label before closing. If the work changed repository files but traceability is still missing, leave the issue `in_progress` or mark it `blocked` until the latest comment includes the commit or PR URL.
+
+Private-repository evidence is verified server-side by Paperclip's backend, not by the agent shell. For private GitHub repos, configure backend GitHub access with either a server-level `GITHUB_TOKEN` or a project env binding for `GITHUB_TOKEN` (plain or secret-ref). A successful `gh` login inside the worker session does not satisfy this check.
 
 If assignment is denied with `403 Missing permission: tasks:assign`, retry without assignee fields and use a parent-thread comment to route triage instead of blocking the run.
 

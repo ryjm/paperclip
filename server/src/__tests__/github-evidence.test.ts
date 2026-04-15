@@ -156,6 +156,29 @@ describe("verifyGitHubEvidenceIsRemoteVisible", () => {
     expect(result.error).toContain("not reachable on the remote");
   });
 
+  it("uses an explicit githubToken override for private-repo verification", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: false, status: 404 });
+    globalThis.fetch = fetchMock;
+
+    const result = await verifyGitHubEvidenceIsRemoteVisible(
+      "Done in https://github.com/acme/private-repo/commit/abc1234",
+      {
+        githubToken: "ghp_project_token_123",
+      },
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.softPass).not.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/private-repo/commits/abc1234",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer ghp_project_token_123",
+        }),
+      }),
+    );
+  });
+
   it("rejects (soft-pass) when repo is inaccessible (private) without GITHUB_TOKEN", async () => {
     globalThis.fetch = vi
       .fn()
