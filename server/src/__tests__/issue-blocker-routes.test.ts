@@ -67,7 +67,7 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
-      issuePrefix: "PAP",
+      issuePrefix: "T1A2B3",
       requireBoardApprovalForNewAgents: false,
     });
 

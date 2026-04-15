@@ -24,9 +24,6 @@ export function activityRoutes(db: Db) {
   const issueSvc = issueService(db);
 
   async function resolveIssueByRef(rawId: string) {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
-      return issueSvc.getByIdentifier(rawId);
-    }
     return issueSvc.getById(rawId);
   }
 

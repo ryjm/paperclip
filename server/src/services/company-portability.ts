@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
+import { isIssueIdentifierRef } from "../issue-identifiers.js";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
@@ -3055,7 +3056,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const resolveIssueBySelector = async (selector: string) => {
       const trimmed = selector.trim();
       if (!trimmed) return null;
-      return trimmed.includes("-")
+      return isIssueIdentifierRef(trimmed)
         ? issuesSvc.getByIdentifier(trimmed)
         : issuesSvc.getById(trimmed);
     };
