@@ -609,7 +609,7 @@ type TimerWakeIssueSummary = {
 };
 
 type TimerWakeSuppressionDecision = {
-  reason: "heartbeat.blocked_only_inbox" | "heartbeat.empty_company_queue";
+  reason: "heartbeat.blocked_only_inbox" | "heartbeat.empty_agent_queue";
   stateKey: string;
   alreadyRecorded: boolean;
 };
@@ -2693,18 +2693,7 @@ export function heartbeatService(db: Db) {
     });
 
     if (assignedIssues.length === 0) {
-      const [{ count }] = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, agent.companyId),
-            inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
-            isNull(issues.hiddenAt),
-          ),
-        );
-      if (Number(count ?? 0) > 0) return null;
-      return buildSuppressionDecision("heartbeat.empty_company_queue", "empty_company_queue");
+      return buildSuppressionDecision("heartbeat.empty_agent_queue", "empty_agent_queue");
     }
     if (assignedIssues.some((issue) => issue.status !== "blocked")) return null;
 
