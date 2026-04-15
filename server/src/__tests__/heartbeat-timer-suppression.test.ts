@@ -233,12 +233,12 @@ describe("heartbeat timer suppression", () => {
     await db.delete(agents);
   });
 
-  async function seedTimerAgent() {
+  async function seedTimerAgent(name = "Suppressed Timer Agent") {
     const agentId = randomUUID();
     await db.insert(agents).values({
       id: agentId,
       companyId,
-      name: "Suppressed Timer Agent",
+      name,
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
@@ -384,7 +384,7 @@ describe("heartbeat timer suppression", () => {
     expect(wakeups[0]?.payload).not.toEqual(wakeups[1]?.payload);
   });
 
-  it("skips timer wakeups when the company has no non-terminal issues", async () => {
+  it("skips timer wakeups when the agent has no assigned actionable issues", async () => {
     await seedTimerAgent();
 
     const result = await heartbeat().tickTimers(new Date("2026-03-23T12:00:30.000Z"));
@@ -407,15 +407,60 @@ describe("heartbeat timer suppression", () => {
     expect(wakeups).toEqual([
       {
         status: "skipped",
-        reason: "heartbeat.empty_company_queue",
+        reason: "heartbeat.empty_agent_queue",
         payload: {
-          suppressionStateKey: "empty_company_queue",
+          suppressionStateKey: "empty_agent_queue",
         },
       },
     ]);
   });
 
-  it("does not write duplicate empty-queue skip rows while the company stays idle", async () => {
+  it("still suppresses timer wakes when only unrelated company work exists", async () => {
+    const agentId = await seedTimerAgent();
+
+    const currentIssueNumber = issueNumber;
+    issueNumber += 1;
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: `Other Agent Work ${currentIssueNumber}`,
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: agentId,
+      issueNumber: currentIssueNumber,
+      identifier: `HTS-${currentIssueNumber}`,
+    });
+
+    const result = await heartbeat().tickTimers(new Date("2026-03-23T12:00:30.000Z"));
+
+    expect(result).toMatchObject({
+      checked: 1,
+      enqueued: 0,
+      skipped: 1,
+    });
+
+    const wakeups = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(asc(agentWakeupRequests.requestedAt));
+
+    expect(wakeups).toEqual([
+      {
+        status: "skipped",
+        reason: "heartbeat.empty_agent_queue",
+        payload: {
+          suppressionStateKey: "empty_agent_queue",
+        },
+      },
+    ]);
+  });
+
+  it("does not write duplicate empty-agent-queue skip rows while the agent stays idle", async () => {
     const agentId = await seedTimerAgent();
 
     await heartbeat().tickTimers(new Date("2026-03-23T12:00:30.000Z"));
@@ -437,12 +482,12 @@ describe("heartbeat timer suppression", () => {
 
     expect(wakeups).toEqual([
       {
-        reason: "heartbeat.empty_company_queue",
+        reason: "heartbeat.empty_agent_queue",
       },
     ]);
   });
 
-  it("resumes timer wakeups after new company work appears", async () => {
+  it("resumes timer wakeups after fresh work is assigned to the agent", async () => {
     const agentId = await seedTimerAgent();
 
     await heartbeat().tickTimers(new Date("2026-03-23T12:00:30.000Z"));
@@ -456,6 +501,7 @@ describe("heartbeat timer suppression", () => {
       status: "todo",
       priority: "medium",
       createdByAgentId: agentId,
+      assigneeAgentId: agentId,
       issueNumber: currentIssueNumber,
       identifier: `HTS-${currentIssueNumber}`,
     });
@@ -479,7 +525,7 @@ describe("heartbeat timer suppression", () => {
 
     expect(wakeups).toEqual([
       {
-        reason: "heartbeat.empty_company_queue",
+        reason: "heartbeat.empty_agent_queue",
         status: "skipped",
       },
       {
