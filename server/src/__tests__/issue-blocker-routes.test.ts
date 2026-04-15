@@ -150,4 +150,56 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
       "Still blocked while route regression coverage runs.",
     ]);
   });
+
+  it("PATCH comment is immediately visible on first GET, heartbeat-context, and comments read", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "VIS",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Comment visibility regression",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const patchRes = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send({ comment: "Immediate visibility test comment." });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body.comment).toEqual(
+      expect.objectContaining({ body: "Immediate visibility test comment." }),
+    );
+    const commentId = patchRes.body.comment.id;
+    const commentCreatedAt = patchRes.body.comment.createdAt;
+
+    const [detailRes, heartbeatRes, commentsRes] = await Promise.all([
+      request(app).get(`/api/issues/${issue.identifier}`),
+      request(app).get(`/api/issues/${issue.identifier}/heartbeat-context`),
+      request(app).get(`/api/issues/${issue.identifier}/comments`),
+    ]);
+
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body.id).toBe(issue.id);
+
+    expect(heartbeatRes.status).toBe(200);
+    expect(heartbeatRes.body.commentCursor).toEqual({
+      totalComments: 1,
+      latestCommentId: commentId,
+      latestCommentAt: commentCreatedAt,
+    });
+
+    expect(commentsRes.status).toBe(200);
+    expect(commentsRes.headers["cache-control"]).toBe("no-store");
+    expect(commentsRes.body).toHaveLength(1);
+    expect(commentsRes.body[0]).toEqual(
+      expect.objectContaining({
+        id: commentId,
+        body: "Immediate visibility test comment.",
+      }),
+    );
+  });
 });
