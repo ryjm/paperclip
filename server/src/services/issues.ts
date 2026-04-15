@@ -1081,6 +1081,9 @@ export function issueService(db: Db) {
       if (!executionRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) {
         executionRunCondition = sql<boolean>`${issues.executionRunId} = ${input.expectedExecutionRunId}`;
       } else if (executionRun.status === "queued" && executionRun.agentId === input.actorAgentId) {
+        // A non-coalesced deferred_issue_execution wake is later promoted by
+        // releaseIssueExecutionAndPromote(), which stamps a queued successor
+        // onto executionRunId before the same agent ever writes checkoutRunId.
         executionRunCondition = sql<boolean>`
           ${issues.executionRunId} = ${input.expectedExecutionRunId}
           and exists (

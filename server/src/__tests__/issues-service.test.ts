@@ -585,7 +585,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
-  it("adopts checkoutless issue locks from orphaned queued runs owned by the same agent", async () => {
+  it("adopts checkoutless issue locks from deferred issue-execution promotions owned by the same agent", async () => {
     const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
     const queuedRunId = randomUUID();
     const currentRunId = randomUUID();
@@ -607,7 +607,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Checkout should adopt queued orphan locks",
+      title: "Checkout should adopt deferred promotion locks",
       status: "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
