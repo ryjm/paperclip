@@ -424,7 +424,7 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("promotes deferred comment wakes into a queued successor while checkoutRunId stays null", async () => {
+  it("promotes deferred comment wakes for already-in-progress same-assignee issues while checkoutRunId stays null", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -465,22 +465,25 @@ describe("heartbeat comment wake batching", () => {
         id: issueId,
         companyId,
         title: "Deferred wake promotion",
-        status: "todo",
+        status: "in_progress",
         priority: "medium",
         assigneeAgentId: agentId,
+        startedAt: new Date("2026-04-01T00:00:00.000Z"),
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
       });
 
+      // execution_* wakes bypass harness auto-checkout, which preserves the
+      // issueService.update() composition shape this regression is meant to pin.
       const firstRun = await heartbeat.wakeup(agentId, {
-        source: "assignment",
+        source: "automation",
         triggerDetail: "system",
-        reason: "issue_assigned",
+        reason: "execution_changes_requested",
         payload: { issueId },
         contextSnapshot: {
           issueId,
           taskId: issueId,
-          wakeReason: "issue_assigned",
+          wakeReason: "execution_changes_requested",
         },
         requestedByActorType: "system",
         requestedByActorId: null,
@@ -490,10 +493,26 @@ describe("heartbeat comment wake batching", () => {
       if (!firstRun) throw new Error("Expected first run to be queued");
       await waitFor(() => gateway.getAgentPayloads().length === 1);
 
-      await db
-        .update(issues)
-        .set({ checkoutRunId: null, updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
+      const initialExecutionIssue = await db
+        .select({
+          status: issues.status,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(initialExecutionIssue).toMatchObject({
+        status: "in_progress",
+        checkoutRunId: null,
+        executionRunId: firstRun.id,
+      });
+      expect(initialExecutionIssue?.executionLockedAt).not.toBeNull();
+      if (!initialExecutionIssue?.executionLockedAt) {
+        throw new Error("Expected initial executionLockedAt to be set");
+      }
 
       await db.insert(issueComments).values({
         companyId,
@@ -567,6 +586,7 @@ describe("heartbeat comment wake batching", () => {
       if (!prePromotionIssue?.executionLockedAt) {
         throw new Error("Expected pre-promotion executionLockedAt to be set");
       }
+      expect(prePromotionIssue.executionLockedAt.getTime()).toBe(initialExecutionIssue.executionLockedAt.getTime());
 
       const blockingRunId = randomUUID();
       await db
@@ -655,6 +675,7 @@ describe("heartbeat comment wake batching", () => {
         status: "queued",
         startedAt: null,
       });
+      if (!promotedRun) throw new Error("Expected promoted run to exist");
 
       const issue = await db
         .select({
@@ -674,6 +695,21 @@ describe("heartbeat comment wake batching", () => {
       });
       expect(issue?.executionLockedAt).toBeInstanceOf(Date);
       expect(issue?.executionLockedAt?.getTime()).toBeGreaterThan(prePromotionIssue.executionLockedAt.getTime());
+
+      await heartbeat.cancelRun(blockingRunId);
+      await waitFor(async () => {
+        const settledRuns = await db
+          .select({
+            id: heartbeatRuns.id,
+            status: heartbeatRuns.status,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId));
+
+        const blockerRun = settledRuns.find((run) => run.id === blockingRunId) ?? null;
+        const resumedPromotedRun = settledRuns.find((run) => run.id === promotedRun.id) ?? null;
+        return blockerRun?.status === "cancelled" && resumedPromotedRun?.status === "succeeded";
+      });
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
