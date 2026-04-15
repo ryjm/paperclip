@@ -91,6 +91,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     agentId: string;
     runId: string;
     status: string;
+    startedAt?: Date | null;
+    finishedAt?: Date | null;
   }) {
     const now = new Date("2026-04-01T00:00:00.000Z");
     await db.insert(heartbeatRuns).values({
@@ -100,8 +102,10 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       invocationSource: "assignment",
       triggerDetail: "test",
       status: input.status,
-      startedAt: now,
-      finishedAt: input.status === "queued" || input.status === "running" ? null : now,
+      startedAt: input.startedAt === undefined ? now : input.startedAt,
+      finishedAt: input.finishedAt === undefined
+        ? (input.status === "queued" || input.status === "running" ? null : now)
+        : input.finishedAt,
       updatedAt: now,
     });
   }
@@ -500,6 +504,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       agentId,
       runId: orphanRunId,
       status: "queued",
+      startedAt: null,
+      finishedAt: null,
     });
     await insertHeartbeatRun({
       companyId,
