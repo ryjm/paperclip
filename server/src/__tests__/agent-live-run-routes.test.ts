@@ -76,14 +76,14 @@ describe("agent live run routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
-    mockIssueService.getByIdentifier.mockResolvedValue({
+    mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
       executionRunId: "run-1",
       assigneeAgentId: "agent-1",
       status: "in_progress",
     });
-    mockIssueService.getById.mockResolvedValue(null);
+    mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -118,10 +118,10 @@ describe("agent live run routes", () => {
   });
 
   it("returns a compact active run payload for issue polling", async () => {
-    const res = await request(await createApp()).get("/api/issues/PAP-1295/active-run");
+    const res = await request(await createApp()).get("/api/issues/T1A2B3-1295/active-run");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1295");
+    expect(mockIssueService.getById).toHaveBeenCalledWith("T1A2B3-1295");
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
     expect(res.body).toEqual({
       id: "run-1",
@@ -139,6 +139,7 @@ describe("agent live run routes", () => {
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
     expect(res.body).not.toHaveProperty("logRef");
+    expect(mockIssueService.getByIdentifier).not.toHaveBeenCalled();
   });
 
   it("ignores a stale execution run from another issue and falls back to the assignee's matching run", async () => {
