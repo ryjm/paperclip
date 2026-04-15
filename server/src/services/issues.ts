@@ -1744,10 +1744,27 @@ export function issueService(db: Db) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
+      const projectChanged = issueData.projectId !== undefined && issueData.projectId !== existing.projectId;
       const nextProjectWorkspaceId =
-        issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
+        issueData.projectWorkspaceId !== undefined
+          ? issueData.projectWorkspaceId
+          : projectChanged
+            ? null
+            : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
-        issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
+        issueData.executionWorkspaceId !== undefined
+          ? issueData.executionWorkspaceId
+          : projectChanged
+            ? null
+            : existing.executionWorkspaceId;
+      if (projectChanged) {
+        if (issueData.projectWorkspaceId === undefined) {
+          patch.projectWorkspaceId = null;
+        }
+        if (issueData.executionWorkspaceId === undefined) {
+          patch.executionWorkspaceId = null;
+        }
+      }
       if (nextProjectWorkspaceId) {
         await assertValidProjectWorkspace(existing.companyId, nextProjectId, nextProjectWorkspaceId);
       }
