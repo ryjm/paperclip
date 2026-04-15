@@ -630,6 +630,12 @@ type TimerWakeIssueSummary = {
   latestActivityAgentId: string | null;
 };
 
+type TimerWakeSuppressionDecision = {
+  reason: "heartbeat.blocked_only_inbox" | "heartbeat.empty_company_queue";
+  stateKey: string;
+  alreadyRecorded: boolean;
+};
+
 export function shouldSuppressTimerWakeForAssignedIssues(
   agentId: string,
   assignedIssues: TimerWakeIssueSummary[],
@@ -3263,7 +3269,52 @@ export function heartbeatService(db: Db) {
         ),
       );
 
-    if (assignedIssues.length === 0) return null;
+    const getLatestSuppressionStateKey = async (reason: TimerWakeSuppressionDecision["reason"]) => {
+      const latestSuppressionRequest = await db
+        .select({
+          payload: agentWakeupRequests.payload,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, agent.companyId),
+            eq(agentWakeupRequests.agentId, agent.id),
+            eq(agentWakeupRequests.source, "timer"),
+            eq(agentWakeupRequests.status, "skipped"),
+            eq(agentWakeupRequests.reason, reason),
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      const latestSuppressionPayload = parseObject(latestSuppressionRequest?.payload);
+      return readNonEmptyString(latestSuppressionPayload.suppressionStateKey);
+    };
+
+    const buildSuppressionDecision = async (
+      reason: TimerWakeSuppressionDecision["reason"],
+      stateKey: string,
+    ): Promise<TimerWakeSuppressionDecision> => ({
+      reason,
+      stateKey,
+      alreadyRecorded: (await getLatestSuppressionStateKey(reason)) === stateKey,
+    });
+
+    if (assignedIssues.length === 0) {
+      const [{ count }] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+            isNull(issues.hiddenAt),
+          ),
+        );
+      if (Number(count ?? 0) > 0) return null;
+      return buildSuppressionDecision("heartbeat.empty_company_queue", "empty_company_queue");
+    }
     if (assignedIssues.some((issue) => issue.status !== "blocked")) return null;
 
     const latestActivityRows = await db
@@ -3302,34 +3353,7 @@ export function heartbeatService(db: Db) {
     );
 
     if (!suppressionStateKey) return null;
-
-    const latestSuppressionRequest = await db
-      .select({
-        payload: agentWakeupRequests.payload,
-      })
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, agent.companyId),
-          eq(agentWakeupRequests.agentId, agent.id),
-          eq(agentWakeupRequests.source, "timer"),
-          eq(agentWakeupRequests.status, "skipped"),
-          eq(agentWakeupRequests.reason, "heartbeat.blocked_only_inbox"),
-        ),
-      )
-      .orderBy(desc(agentWakeupRequests.requestedAt))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-
-    const latestSuppressionPayload = parseObject(latestSuppressionRequest?.payload);
-    const latestSuppressionStateKey = readNonEmptyString(
-      latestSuppressionPayload.suppressionStateKey,
-    );
-
-    return {
-      alreadyRecorded: latestSuppressionStateKey === suppressionStateKey,
-      stateKey: suppressionStateKey,
-    };
+    return buildSuppressionDecision("heartbeat.blocked_only_inbox", suppressionStateKey);
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
@@ -5310,7 +5334,7 @@ export function heartbeatService(db: Db) {
       if (timerWakeSuppression.alreadyRecorded) {
         return null;
       }
-      await writeSkippedRequest("heartbeat.blocked_only_inbox", {
+      await writeSkippedRequest(timerWakeSuppression.reason, {
         ...(payload ?? {}),
         suppressionStateKey: timerWakeSuppression.stateKey,
       });
