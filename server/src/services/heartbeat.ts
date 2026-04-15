@@ -639,6 +639,7 @@ export function getTimerWakeSuppressionStateKey(
     .join("|");
 }
 
+
 export function summarizeHeartbeatRunContextSnapshot(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
