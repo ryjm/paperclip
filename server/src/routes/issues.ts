@@ -42,6 +42,7 @@ import {
   logActivity,
   projectService,
   routineService,
+  secretService,
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
@@ -57,6 +58,13 @@ import {
 } from "./github-evidence.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const GITHUB_TOKEN_ENV_KEY = "GITHUB_TOKEN";
+const BACKEND_GITHUB_VERIFIER_EXPLANATION =
+  "This check runs in Paperclip's backend GitHub verifier, not inside the agent shell, " +
+  "so a working `gh` session in the worker does not satisfy private-repo verification.";
+const BACKEND_GITHUB_VERIFIER_FIX =
+  "Retry when GitHub API/network access is healthy, or configure a backend GITHUB_TOKEN for " +
+  "Paperclip (server env or project env/secret). A worker `gh` login is not used by this verifier.";
 
 type CommentWakeActor = {
   actorType: "agent" | "user";
@@ -166,14 +174,15 @@ export function buildDoneEvidenceUnreachableErrorResponse(remoteError: string) {
 export function buildDoneEvidenceVerificationUnavailableErrorResponse(remoteError: string) {
   return {
     error:
-      "Cannot mark issue done: commit evidence could not be verified against GitHub right now. " +
-      "Retry when GitHub access is healthy, or configure GITHUB_TOKEN for private repository verification.",
+      "Cannot mark issue done: Paperclip's backend GitHub verifier could not validate the cited evidence right now. " +
+      BACKEND_GITHUB_VERIFIER_EXPLANATION,
     details: {
       ...buildDoneEvidenceRequiredDetails(),
       remoteVerification: {
         result: "verification_unavailable",
         detail: remoteError,
-        fix: "Retry when GitHub API/network access is healthy, or configure GITHUB_TOKEN so private repos can be verified.",
+        verifierContext: BACKEND_GITHUB_VERIFIER_EXPLANATION,
+        fix: BACKEND_GITHUB_VERIFIER_FIX,
       },
     },
   };
@@ -267,6 +276,42 @@ async function resolveTrackedGitHubEvidenceTarget(
     ...repo,
     baseRef: trackedWorkspace.defaultRef ?? trackedWorkspace.repoRef ?? null,
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function resolveGitHubEvidenceVerificationToken(
+  db: Db,
+  projectsSvc: ReturnType<typeof projectService>,
+  input: {
+    companyId: string;
+    projectId: string | null | undefined;
+  },
+): Promise<string | null> {
+  if (input.projectId) {
+    const project = await projectsSvc.getById(input.projectId);
+    const env = asRecord(project?.env);
+    const githubTokenBinding = env?.[GITHUB_TOKEN_ENV_KEY];
+    if (githubTokenBinding !== undefined) {
+      const secretsSvc = secretService(db);
+      const resolved = await secretsSvc.resolveEnvBindings(input.companyId, {
+        [GITHUB_TOKEN_ENV_KEY]: githubTokenBinding,
+      });
+      const projectToken = readNonEmptyString(resolved.env[GITHUB_TOKEN_ENV_KEY]);
+      if (projectToken) return projectToken;
+    }
+  }
+
+  return readNonEmptyString(process.env.GITHUB_TOKEN);
 }
 
 export function issueRoutes(db: Db, storage: StorageService, _opts?: { feedbackExportService?: unknown }) {
@@ -1135,11 +1180,20 @@ export function issueRoutes(db: Db, storage: StorageService, _opts?: { feedbackE
             projectId: projectIdForEvidence,
             projectWorkspaceId: projectWorkspaceIdForEvidence,
           });
+          const githubVerificationToken = await resolveGitHubEvidenceVerificationToken(
+            db,
+            projectsSvc,
+            {
+              companyId: existing.companyId,
+              projectId: projectIdForEvidence,
+            },
+          );
 
           // Verify commit evidence is actually reachable on the remote and landed
           // on the tracked base branch when the issue belongs to a repo-backed project.
           const remoteCheck = await verifyGitHubEvidenceIsRemoteVisible(evidenceCommentBody!, {
             trackedTarget: trackedGitHubTarget,
+            githubToken: githubVerificationToken,
           });
           if (!remoteCheck.valid) {
             if (remoteCheck.softPass) {
