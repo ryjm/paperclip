@@ -74,6 +74,8 @@ Non-code issues can close without GitHub evidence. If the task did not require r
 
 If assignment is denied with `403 Missing permission: tasks:assign`, retry without assignee fields and use a parent-thread comment to route triage instead of blocking the run.
 
+For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
+
 ## Checkout (Claim Task)
 
 ```
