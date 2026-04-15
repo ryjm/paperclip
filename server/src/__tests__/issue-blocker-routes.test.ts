@@ -150,4 +150,64 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
       "Still blocked while route regression coverage runs.",
     ]);
   });
+
+  it("supports incremental comment cursor reads via both after aliases", async () => {
+    const companyId = randomUUID();
+    const oldestCommentId = randomUUID();
+    const middleCommentId = randomUUID();
+    const newestCommentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Cursor pagination issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values([
+      {
+        id: oldestCommentId,
+        companyId,
+        issueId: issue.id,
+        body: "oldest",
+        createdAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        id: middleCommentId,
+        companyId,
+        issueId: issue.id,
+        body: "middle",
+        createdAt: new Date("2026-04-10T00:00:01.000Z"),
+      },
+      {
+        id: newestCommentId,
+        companyId,
+        issueId: issue.id,
+        body: "newest",
+        createdAt: new Date("2026-04-10T00:00:02.000Z"),
+      },
+    ]);
+
+    for (const queryParam of ["after", "afterCommentId"]) {
+      const res = await request(app).get(
+        `/api/issues/${issue.id}/comments?${queryParam}=${middleCommentId}&order=asc`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.body).toMatchObject([
+        {
+          id: newestCommentId,
+          body: "newest",
+        },
+      ]);
+      expect(res.body).toHaveLength(1);
+    }
+  });
 });
