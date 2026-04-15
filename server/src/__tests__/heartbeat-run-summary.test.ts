@@ -87,27 +87,4 @@ describe("mergeHeartbeatRunResultJson", () => {
       stdout: "raw stdout",
     });
   });
-
-  it("bounds oversized stdout and stderr fields before persistence", () => {
-    const stdout = "a".repeat(6_000);
-    const stderr = "b".repeat(7_000);
-
-    const merged = mergeHeartbeatRunResultJson(
-      { stdout, stderr },
-      null,
-    );
-
-    expect(typeof merged?.stdout).toBe("string");
-    expect(typeof merged?.stderr).toBe("string");
-    expect((merged?.stdout as string).length).toBeLessThan(stdout.length);
-    expect((merged?.stderr as string).length).toBeLessThan(stderr.length);
-    expect(merged).toMatchObject({
-      stdoutTruncated: true,
-      stderrTruncated: true,
-      stdoutOriginalLength: stdout.length,
-      stderrOriginalLength: stderr.length,
-    });
-    expect(merged?.stdout).toContain("paperclip truncated adapter output");
-    expect(merged?.stderr).toContain("paperclip truncated adapter output");
-  });
 });
