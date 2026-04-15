@@ -106,6 +106,7 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
 
     const initialCommentsRes = await request(app).get(`/api/issues/${blocked.identifier}/comments`);
     expect(initialCommentsRes.status).toBe(200);
+    expect(initialCommentsRes.headers["cache-control"]).toBe("no-store");
     expect(initialCommentsRes.body).toEqual([]);
 
     const heartbeatRes = await request(app).get(`/api/issues/${blocked.identifier}/heartbeat-context`);
@@ -123,6 +124,13 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
     expect(addCommentRes.status).toBe(201);
     expect(addCommentRes.body.body).toBe("Still blocked while route regression coverage runs.");
 
+    const commentDetailRes = await request(app).get(
+      `/api/issues/${blocked.identifier}/comments/${addCommentRes.body.id}`,
+    );
+    expect(commentDetailRes.status).toBe(200);
+    expect(commentDetailRes.headers["cache-control"]).toBe("no-store");
+    expect(commentDetailRes.body.body).toBe("Still blocked while route regression coverage runs.");
+
     const patchRes = await request(app)
       .patch(`/api/issues/${blocked.identifier}`)
       .send({ status: "blocked", comment: "PATCH route still works with blocker metadata present." });
@@ -136,6 +144,7 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
 
     const finalCommentsRes = await request(app).get(`/api/issues/${blocked.id}/comments`);
     expect(finalCommentsRes.status).toBe(200);
+    expect(finalCommentsRes.headers["cache-control"]).toBe("no-store");
     expect(finalCommentsRes.body.map((comment: { body: string }) => comment.body)).toEqual([
       "PATCH route still works with blocker metadata present.",
       "Still blocked while route regression coverage runs.",

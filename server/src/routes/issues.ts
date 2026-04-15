@@ -1512,6 +1512,7 @@ export function issueRoutes(db: Db, storage: StorageService, _opts?: { feedbackE
       order,
       limit,
     });
+    res.setHeader("Cache-Control", "no-store");
     res.json(comments);
   });
 
@@ -1529,6 +1530,7 @@ export function issueRoutes(db: Db, storage: StorageService, _opts?: { feedbackE
       res.status(404).json({ error: "Comment not found" });
       return;
     }
+    res.setHeader("Cache-Control", "no-store");
     res.json(comment);
   });
 
