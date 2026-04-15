@@ -151,7 +151,7 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
     ]);
   });
 
-  it("PATCH comment is immediately visible on first GET, heartbeat-context, and comments read", async () => {
+  it("PATCH comment is immediately visible on first GET, heartbeat-context, comments, and incremental comments read", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -166,6 +166,12 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
       priority: "medium",
     });
 
+    const seedCommentRes = await request(app)
+      .post(`/api/issues/${issue.identifier}/comments`)
+      .send({ body: "Seed comment for incremental cursor." });
+    expect(seedCommentRes.status).toBe(201);
+    const seedCommentId = seedCommentRes.body.id;
+
     const patchRes = await request(app)
       .patch(`/api/issues/${issue.id}`)
       .send({ comment: "Immediate visibility test comment." });
@@ -176,10 +182,11 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
     const commentId = patchRes.body.comment.id;
     const commentCreatedAt = patchRes.body.comment.createdAt;
 
-    const [detailRes, heartbeatRes, commentsRes] = await Promise.all([
-      request(app).get(`/api/issues/${issue.identifier}`),
-      request(app).get(`/api/issues/${issue.identifier}/heartbeat-context`),
-      request(app).get(`/api/issues/${issue.identifier}/comments`),
+    const [detailRes, heartbeatRes, commentsRes, incrementalRes] = await Promise.all([
+      request(app).get(`/api/issues/${issue.id}`),
+      request(app).get(`/api/issues/${issue.id}/heartbeat-context`),
+      request(app).get(`/api/issues/${issue.id}/comments`),
+      request(app).get(`/api/issues/${issue.id}/comments?after=${seedCommentId}&order=asc`),
     ]);
 
     expect(detailRes.status).toBe(200);
@@ -187,19 +194,28 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
 
     expect(heartbeatRes.status).toBe(200);
     expect(heartbeatRes.body.commentCursor).toEqual({
-      totalComments: 1,
+      totalComments: 2,
       latestCommentId: commentId,
       latestCommentAt: commentCreatedAt,
     });
 
     expect(commentsRes.status).toBe(200);
     expect(commentsRes.headers["cache-control"]).toBe("no-store");
-    expect(commentsRes.body).toHaveLength(1);
-    expect(commentsRes.body[0]).toEqual(
-      expect.objectContaining({
-        id: commentId,
-        body: "Immediate visibility test comment.",
-      }),
+    expect(commentsRes.body).toHaveLength(2);
+    expect(commentsRes.body.map((c: { body: string }) => c.body)).toContain(
+      "Immediate visibility test comment.",
+    );
+
+    expect(incrementalRes.status).toBe(200);
+    expect(incrementalRes.headers["cache-control"]).toBe("no-store");
+    expect(incrementalRes.body.length).toBeGreaterThanOrEqual(1);
+    expect(incrementalRes.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: commentId,
+          body: "Immediate visibility test comment.",
+        }),
+      ]),
     );
   });
 });
