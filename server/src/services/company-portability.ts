@@ -3049,7 +3049,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       selectedProjects.set(match.id, match);
     }
 
-    const selectedIssues = new Map<string, Awaited<ReturnType<typeof issuesSvc.getById>>>();
+    type IssueListItem = Awaited<ReturnType<typeof issuesSvc.list>>[number];
+    type IssueDetailItem = Awaited<ReturnType<typeof issuesSvc.getById>>;
+    const selectedIssues = new Map<string, IssueListItem | IssueDetailItem>();
     const selectedRoutines = new Map<string, typeof allRoutines[number]>();
     const routineById = new Map(allRoutines.map((routine) => [routine.id, routine]));
     const resolveIssueBySelector = async (selector: string) => {
