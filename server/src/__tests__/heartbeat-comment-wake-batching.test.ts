@@ -487,6 +487,7 @@ describe("heartbeat comment wake batching", () => {
       });
 
       expect(firstRun).not.toBeNull();
+      if (!firstRun) throw new Error("Expected first run to be queued");
       await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       await db
@@ -546,6 +547,27 @@ describe("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      const prePromotionIssue = await db
+        .select({
+          status: issues.status,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(prePromotionIssue).toMatchObject({
+        status: "in_progress",
+        checkoutRunId: null,
+        executionRunId: firstRun.id,
+      });
+      expect(prePromotionIssue?.executionLockedAt).not.toBeNull();
+      if (!prePromotionIssue?.executionLockedAt) {
+        throw new Error("Expected pre-promotion executionLockedAt to be set");
+      }
+
       const blockingRunId = randomUUID();
       await db
         .insert(heartbeatRuns)
@@ -581,6 +603,7 @@ describe("heartbeat comment wake batching", () => {
             status: issues.status,
             checkoutRunId: issues.checkoutRunId,
             executionRunId: issues.executionRunId,
+            executionLockedAt: issues.executionLockedAt,
           })
           .from(issues)
           .where(eq(issues.id, issueId))
@@ -608,6 +631,8 @@ describe("heartbeat comment wake batching", () => {
           issue.status === "in_progress" &&
           issue.checkoutRunId == null &&
           issue.executionRunId === promotedRun.id &&
+          issue.executionLockedAt instanceof Date &&
+          issue.executionLockedAt.getTime() > prePromotionIssue.executionLockedAt.getTime() &&
           promotedWake &&
           promotedWake.runId === promotedRun.id,
         );
@@ -636,6 +661,7 @@ describe("heartbeat comment wake batching", () => {
           status: issues.status,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
         })
         .from(issues)
         .where(eq(issues.id, issueId))
@@ -646,6 +672,8 @@ describe("heartbeat comment wake batching", () => {
         checkoutRunId: null,
         executionRunId: promotedRun?.id,
       });
+      expect(issue?.executionLockedAt).toBeInstanceOf(Date);
+      expect(issue?.executionLockedAt?.getTime()).toBeGreaterThan(prePromotionIssue.executionLockedAt.getTime());
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
