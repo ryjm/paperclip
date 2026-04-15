@@ -10,7 +10,8 @@ import { ensureTaskScopedProjectWorkspace } from "../services/project-run-worksp
 const execFileAsync = promisify(execFile);
 
 async function runGit(cwd: string, args: string[]) {
-  await execFileAsync("git", args, { cwd, encoding: "utf8" });
+  const result = await execFileAsync("git", args, { cwd, encoding: "utf8" });
+  return result.stdout.trim();
 }
 
 async function createCommittedRepo(root: string) {
@@ -24,6 +25,23 @@ async function createCommittedRepo(root: string) {
   await writeFile(path.join(root, "packages", "app", "note.txt"), "clean\n", "utf8");
   await runGit(root, ["add", "."]);
   await runGit(root, ["commit", "-m", "initial"]);
+}
+
+async function createCommittedRepoWithLocalOrigin(root: string) {
+  const upstreamRoot = path.join(root, "upstream.git");
+  const repoRoot = path.join(root, "repo");
+  await mkdir(root, { recursive: true });
+  await runGit(root, ["init", "--bare", upstreamRoot]);
+  await runGit(root, ["clone", upstreamRoot, repoRoot]);
+  await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
+  await runGit(repoRoot, ["config", "commit.gpgsign", "false"]);
+  await runGit(repoRoot, ["config", "tag.gpgsign", "false"]);
+  await mkdir(path.join(repoRoot, "packages", "app"), { recursive: true });
+  await writeFile(path.join(repoRoot, "packages", "app", "note.txt"), "clean\n", "utf8");
+  await runGit(repoRoot, ["add", "."]);
+  await runGit(repoRoot, ["commit", "-m", "initial"]);
+  return repoRoot;
 }
 
 function rememberEnv(key: string) {
@@ -323,6 +341,102 @@ describe("ensureTaskScopedProjectWorkspace", () => {
       } catch {
         // Ignore cleanup failures in test teardown.
       }
+      restoreEnv("PAPERCLIP_HOME", previousHome);
+      restoreEnv("PAPERCLIP_INSTANCE_ID", previousInstance);
+    }
+  });
+
+  it("uses an isolated git clone when the tracked repoUrl differs from the shared origin (GRA-1926)", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-task-clone-"));
+    tempRoots.push(root);
+    const paperclipHome = path.join(root, "paperclip-home");
+    const repoRoot = await createCommittedRepoWithLocalOrigin(path.join(root, "source"));
+    const projectCwd = path.join(repoRoot, "packages", "app");
+    const trackedRepoUrl = "https://github.com/ryjm/tabula.git";
+    const previousHome = rememberEnv("PAPERCLIP_HOME");
+    const previousInstance = rememberEnv("PAPERCLIP_INSTANCE_ID");
+
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "workspace-test";
+
+    try {
+      const workspace = await ensureTaskScopedProjectWorkspace({
+        agentId: "agent-1",
+        projectId: "project-1",
+        taskKey: "issue-1",
+        workspaceId: "workspace-1",
+        projectCwd,
+        repoUrl: trackedRepoUrl,
+        repoRef: "main",
+      });
+
+      expect(workspace.mode).toBe("git_clone");
+      expect(workspace.cwd).toContain(resolveDefaultAgentWorkspaceDir("agent-1"));
+      expect(workspace.cwd).not.toBe(projectCwd);
+      await expect(readFile(path.join(workspace.cwd, "note.txt"), "utf8")).resolves.toBe("clean\n");
+
+      const checkoutRoot = path.join(workspace.rootDir, "repo");
+      const originUrl = await runGit(checkoutRoot, ["config", "--get", "remote.origin.url"]);
+      const branchName = await runGit(checkoutRoot, ["branch", "--show-current"]);
+      const branchStatus = await runGit(checkoutRoot, ["status", "--short", "--branch"]);
+
+      expect(originUrl).toBe(trackedRepoUrl);
+      expect(branchStatus).toContain(`## ${branchName}...origin/${branchName} [gone]`);
+      expect(workspace.warnings.join("\n")).toContain("isolated git clone");
+      expect(workspace.warnings.join("\n")).toContain("does not match tracked repo");
+    } finally {
+      restoreEnv("PAPERCLIP_HOME", previousHome);
+      restoreEnv("PAPERCLIP_INSTANCE_ID", previousInstance);
+    }
+  });
+
+  it("reuses the same isolated git clone for later heartbeats when the shared origin is mismatched", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-task-clone-reuse-"));
+    tempRoots.push(root);
+    const paperclipHome = path.join(root, "paperclip-home");
+    const repoRoot = await createCommittedRepoWithLocalOrigin(path.join(root, "source"));
+    const projectCwd = path.join(repoRoot, "packages", "app");
+    const trackedRepoUrl = "https://github.com/ryjm/tabula.git";
+    const previousHome = rememberEnv("PAPERCLIP_HOME");
+    const previousInstance = rememberEnv("PAPERCLIP_INSTANCE_ID");
+
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "workspace-test";
+
+    try {
+      const first = await ensureTaskScopedProjectWorkspace({
+        agentId: "agent-1",
+        projectId: "project-1",
+        taskKey: "issue-1",
+        workspaceId: "workspace-1",
+        projectCwd,
+        repoUrl: trackedRepoUrl,
+        repoRef: "main",
+      });
+
+      expect(first.mode).toBe("git_clone");
+      await writeFile(path.join(first.cwd, "note.txt"), "task-local change\n", "utf8");
+
+      const second = await ensureTaskScopedProjectWorkspace({
+        agentId: "agent-1",
+        projectId: "project-1",
+        taskKey: "issue-1",
+        workspaceId: "workspace-1",
+        projectCwd,
+        repoUrl: trackedRepoUrl,
+        repoRef: "main",
+      });
+
+      expect(second.mode).toBe("git_clone");
+      expect(second.cwd).toBe(first.cwd);
+      await expect(readFile(path.join(second.cwd, "note.txt"), "utf8")).resolves.toBe(
+        "task-local change\n",
+      );
+      await expect(readFile(path.join(projectCwd, "note.txt"), "utf8")).resolves.toBe("clean\n");
+      await expect(runGit(path.join(second.rootDir, "repo"), ["config", "--get", "remote.origin.url"])).resolves.toBe(
+        trackedRepoUrl,
+      );
+    } finally {
       restoreEnv("PAPERCLIP_HOME", previousHome);
       restoreEnv("PAPERCLIP_INSTANCE_ID", previousInstance);
     }
