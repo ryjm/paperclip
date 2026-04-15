@@ -7,16 +7,6 @@ function truncateSummaryText(value: unknown, maxLength = HEARTBEAT_RUN_RESULT_SU
   return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
 
-function compactOutputText(value: string, maxLength = HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS) {
-  if (value.length <= maxLength) return value;
-
-  const headChars = Math.max(0, Math.floor(maxLength * 0.65));
-  const tailChars = Math.max(0, Math.floor(maxLength * 0.2));
-  const omittedChars = Math.max(0, value.length - headChars - tailChars);
-  const marker = `\n[paperclip truncated adapter output: omitted ${omittedChars} chars]\n`;
-  return `${value.slice(0, headChars)}${marker}${value.slice(value.length - tailChars)}`;
-}
-
 function readNumericField(record: Record<string, unknown>, key: string) {
   return key in record ? record[key] ?? null : undefined;
 }
@@ -27,27 +17,6 @@ function readCommentText(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function sanitizeRawOutputFields(record: Record<string, unknown>) {
-  let nextRecord = record;
-
-  for (const key of ["stdout", "stderr"] as const) {
-    const value = record[key];
-    if (typeof value !== "string" || value.length <= HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS) {
-      continue;
-    }
-
-    if (nextRecord === record) {
-      nextRecord = { ...record };
-    }
-
-    nextRecord[key] = compactOutputText(value, HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS);
-    nextRecord[`${key}Truncated`] = true;
-    nextRecord[`${key}OriginalLength`] = value.length;
-  }
-
-  return nextRecord;
-}
-
 export function mergeHeartbeatRunResultJson(
   resultJson: Record<string, unknown> | null | undefined,
   summary: string | null | undefined,
@@ -55,7 +24,7 @@ export function mergeHeartbeatRunResultJson(
   const normalizedSummary = readCommentText(summary);
   const baseResult =
     resultJson && typeof resultJson === "object" && !Array.isArray(resultJson)
-      ? sanitizeRawOutputFields(resultJson)
+      ? resultJson
       : null;
 
   if (!baseResult) {
