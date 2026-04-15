@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
@@ -92,7 +92,7 @@ function headersFromIncomingMessage(req: IncomingMessage): Headers {
   return headers;
 }
 
-async function authorizeUpgrade(
+export async function authorizeUpgrade(
   db: Db,
   req: IncomingMessage,
   companyId: string,
@@ -167,6 +167,16 @@ async function authorizeUpgrade(
     .update(agentApiKeys)
     .set({ lastUsedAt: new Date() })
     .where(eq(agentApiKeys.id, key.id));
+
+  const agentRecord = await db
+    .select({ id: agents.id, status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, key.agentId))
+    .then((rows) => rows[0] ?? null);
+
+  if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+    return null;
+  }
 
   return {
     companyId,
