@@ -16,6 +16,7 @@ import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execu
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import { IssueDoneEvidenceLabelGuidance } from "./IssueDoneEvidenceNotice";
 import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
@@ -376,6 +377,7 @@ export function IssueProperties({
 
   const labelsContent = (
     <>
+      <IssueDoneEvidenceLabelGuidance className="px-2 pb-1 text-[11px] leading-4 text-muted-foreground" />
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
         placeholder="Search labels..."
