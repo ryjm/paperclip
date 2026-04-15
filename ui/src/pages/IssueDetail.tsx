@@ -35,7 +35,6 @@ import {
 } from "../lib/keyboardShortcuts";
 import {
   applyOptimisticIssueFieldUpdate,
-  applyOptimisticIssueFieldUpdateToCollection,
   applyOptimisticIssueCommentUpdate,
   createOptimisticIssueComment,
   flattenIssueCommentPages,
@@ -47,6 +46,14 @@ import {
   type IssueCommentReassignment,
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
+import {
+  applyOptimisticIssueUpdateToCompanyIssueCollections,
+  cancelCompanyIssueCollectionQueries,
+  invalidateCompanyIssueCollectionQueries,
+  mergeIssueIntoCompanyIssueCollections,
+  restoreCompanyIssueCollectionQueries,
+  snapshotCompanyIssueCollectionQueries,
+} from "../lib/companyIssueCollections";
 import { removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
@@ -826,10 +833,7 @@ export function IssueDetail() {
 
   const invalidateIssueCollections = useCallback(() => {
     if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+      void invalidateCompanyIssueCollectionQueries(queryClient, selectedCompanyId);
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
     }
   }, [queryClient, selectedCompanyId]);
@@ -841,10 +845,7 @@ export function IssueDetail() {
     );
 
     if (!selectedCompanyId) return;
-    queryClient.setQueryData<Issue[] | undefined>(
-      queryKeys.issues.list(selectedCompanyId),
-      (cached) => applyOptimisticIssueFieldUpdateToCollection(cached, refs, data),
-    );
+    applyOptimisticIssueUpdateToCompanyIssueCollections(queryClient, selectedCompanyId, refs, data);
   }, [queryClient, selectedCompanyId]);
 
   const mergeIssueResponseIntoCaches = useCallback((refs: Iterable<string>, nextIssue: Issue) => {
@@ -854,10 +855,7 @@ export function IssueDetail() {
     );
 
     if (!selectedCompanyId) return;
-    queryClient.setQueryData<Issue[] | undefined>(
-      queryKeys.issues.list(selectedCompanyId),
-      (cached) => cached?.map((item) => (matchesIssueRef(item, refs) ? { ...item, ...nextIssue } : item)),
-    );
+    mergeIssueIntoCompanyIssueCollections(queryClient, selectedCompanyId, refs, nextIssue);
   }, [queryClient, selectedCompanyId]);
 
   const markIssueRead = useMutation({
@@ -877,7 +875,7 @@ export function IssueDetail() {
     onMutate: async (data) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
       if (selectedCompanyId) {
-        await queryClient.cancelQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+        await cancelCompanyIssueCollectionQueries(queryClient, selectedCompanyId);
       }
 
       const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
@@ -888,13 +886,13 @@ export function IssueDetail() {
       const previousDetailQueries = queryClient
         .getQueriesData<Issue>({ queryKey: ["issues", "detail"] })
         .filter(([, cachedIssue]) => cachedIssue && matchesIssueRef(cachedIssue, issueRefs));
-      const previousList = selectedCompanyId
-        ? queryClient.getQueryData<Issue[]>(queryKeys.issues.list(selectedCompanyId))
-        : undefined;
+      const previousCollectionQueries = selectedCompanyId
+        ? snapshotCompanyIssueCollectionQueries(queryClient, selectedCompanyId)
+        : [];
 
       applyOptimisticIssueCacheUpdate(issueRefs, data);
 
-      return { previousDetailQueries, previousList, selectedCompanyId };
+      return { previousDetailQueries, previousCollectionQueries, selectedCompanyId };
     },
     onSuccess: ({ comment: _comment, ...nextIssue }) => {
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
@@ -907,8 +905,8 @@ export function IssueDetail() {
       for (const [queryKey, previousIssue] of context?.previousDetailQueries ?? []) {
         queryClient.setQueryData(queryKey, previousIssue);
       }
-      if (context?.selectedCompanyId) {
-        queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
+      if (context?.previousCollectionQueries) {
+        restoreCompanyIssueCollectionQueries(queryClient, context.previousCollectionQueries);
       }
       pushToast({
         title: "Issue update failed",
@@ -919,7 +917,7 @@ export function IssueDetail() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
       if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+        void invalidateCompanyIssueCollectionQueries(queryClient, selectedCompanyId);
       }
     },
   });
