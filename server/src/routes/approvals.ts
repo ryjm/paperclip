@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
+  isUuidLike,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
@@ -16,6 +17,7 @@ import {
   logActivity,
   secretService,
 } from "../services/index.js";
+import { badRequest } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 
@@ -33,6 +35,14 @@ export function approvalRoutes(db: Db) {
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  router.param("id", (_req, _res, next, rawId) => {
+    if (!isUuidLike(rawId)) {
+      next(badRequest(`Invalid approval id: ${rawId}`));
+      return;
+    }
+    next();
+  });
 
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
