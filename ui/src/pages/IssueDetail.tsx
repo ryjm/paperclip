@@ -55,6 +55,7 @@ import { removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
+import { IssueDoneEvidenceNotice, resolveIssueDoneEvidenceState } from "../components/IssueDoneEvidenceNotice";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
@@ -1934,6 +1935,17 @@ export function IssueDetail() {
   const attachmentList = attachments ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
   const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
+  const {
+    codeEvidenceRequired,
+    codeEvidenceSatisfied,
+    uiEvidenceRequired,
+    uiScreenshotSatisfied,
+    uiPlaywrightSatisfied,
+  } = resolveIssueDoneEvidenceState({
+    currentLabels: issue?.labels,
+    attachments: attachmentList,
+    comments: threadComments,
+  });
 
   const handleChatImageClick = useCallback(
     (src: string) => {
@@ -2270,6 +2282,14 @@ export function IssueDetail() {
             </Popover>
           </div>
         </div>
+
+        <IssueDoneEvidenceNotice
+          codeEvidenceRequired={codeEvidenceRequired}
+          codeEvidenceSatisfied={codeEvidenceSatisfied}
+          uiEvidenceRequired={uiEvidenceRequired}
+          uiScreenshotSatisfied={uiScreenshotSatisfied}
+          uiPlaywrightSatisfied={uiPlaywrightSatisfied}
+        />
 
         <InlineEditor
           value={issue.title}

@@ -256,6 +256,33 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("shows done-evidence label guidance in the label picker", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        labels: [{ id: "label-1", companyId: "company-1", name: "code", color: "#2563eb", createdAt: new Date("2026-04-06T12:00:00.000Z"), updatedAt: new Date("2026-04-06T12:00:00.000Z") }],
+        labelIds: ["label-1"],
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    const addLabelButton = container.querySelector('button[aria-label="Add label"]');
+    expect(addLabelButton).not.toBeNull();
+
+    await act(async () => {
+      addLabelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Use code for repo-changing work and ui for UI-changing work.");
+    expect(container.textContent).toContain("code blocks done until the latest comment has a GitHub commit or PR link.");
+    expect(container.textContent).toContain("ui blocks done until the issue has screenshot attachments and the latest comment cites a passing Playwright run.");
+
+    act(() => root.unmount());
+  });
+
   it("allows setting and clearing a parent issue from the properties pane", async () => {
     const onUpdate = vi.fn();
     mockIssuesApi.list.mockResolvedValue([
