@@ -302,69 +302,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
-  it("reconciles stale execution locks in list results before building inbox data", async () => {
-    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
-    const staleRunId = randomUUID();
-    const issueId = randomUUID();
-    const lockedAt = new Date("2026-04-01T00:05:00.000Z");
-
-    await insertHeartbeatRun({
-      companyId,
-      agentId,
-      runId: staleRunId,
-      status: "failed",
-    });
-
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Inbox drift issue",
-      status: "todo",
-      priority: "medium",
-      assigneeAgentId: agentId,
-      executionRunId: staleRunId,
-      executionLockedAt: lockedAt,
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
-    });
-
-    const result = await svc.list(companyId, {
-      assigneeAgentId: agentId,
-      status: "todo,in_progress,blocked",
-    });
-
-    expect(result).toHaveLength(1);
-    expect(result[0]?.executionRunId).toBeNull();
-    expect(result[0]?.activeRun).toBeNull();
-
-    const persisted = await db
-      .select({
-        executionRunId: issues.executionRunId,
-        executionLockedAt: issues.executionLockedAt,
-      })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-
-    expect(persisted).toEqual({
-      executionRunId: null,
-      executionLockedAt: null,
-    });
-  });
-
-  it("reconciles stale execution locks in raw issue reads", async () => {
-    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
-    const staleRunId = randomUUID();
-    const issueId = randomUUID();
-    const lockedAt = new Date("2026-04-01T00:05:00.000Z");
-
-    await insertHeartbeatRun({
-      companyId,
-      agentId,
-      runId: staleRunId,
-      status: "succeeded",
-
-it("applies result limits to issue search", async () => {
+  it("applies result limits to issue search", async () => {
     const companyId = randomUUID();
 
     await db.insert(companies).values({
@@ -472,34 +410,22 @@ it("applies result limits to issue search", async () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Raw issue drift",
-      status: "blocked",
+      issueNumber: 1064,
+      identifier: "PAP-1064",
+      title: "Feedback votes error",
+      status: "todo",
       priority: "medium",
-      assigneeAgentId: agentId,
-      executionRunId: staleRunId,
-      executionLockedAt: lockedAt,
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
+      createdByUserId: "user-1",
     });
 
-    const issue = await svc.getById(issueId);
+    const issue = await svc.getById("PAP-1064");
 
-    expect(issue?.executionRunId).toBeNull();
-    expect(issue?.executionLockedAt).toBeNull();
-
-    const persisted = await db
-      .select({
-        executionRunId: issues.executionRunId,
-        executionLockedAt: issues.executionLockedAt,
-      })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-
-    expect(persisted).toEqual({
-      executionRunId: null,
-      executionLockedAt: null,
-    });
+    expect(issue).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        identifier: "PAP-1064",
+      }),
+    );
   });
 
   it("clears stale execution locks before retrying checkout", async () => {
@@ -542,6 +468,76 @@ it("applies result limits to issue search", async () => {
       assigneeAgentId: agentId,
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
+    });
+
+    const persisted = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("adopts same-agent queued orphan execution locks on checkout", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const orphanRunId = randomUUID();
+    const currentRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: orphanRunId,
+      status: "queued",
+    });
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: currentRunId,
+      status: "running",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued orphan adoption should recover",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: orphanRunId,
+      executionLockedAt: new Date("2026-04-01T00:05:00.000Z"),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo", "backlog", "blocked", "in_progress"], currentRunId);
+
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    await expect(svc.assertCheckoutOwner(issueId, agentId, currentRunId)).resolves.toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      adoptedFromRunId: null,
     });
 
     const persisted = await db
@@ -607,22 +603,40 @@ it("applies result limits to issue search", async () => {
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
 
-issueNumber: 1064,
-      identifier: "PAP-1064",
-      title: "Feedback votes error",
-      status: "todo",
-      priority: "medium",
-      createdByUserId: "user-1",
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
     });
 
-    const issue = await svc.getById("PAP-1064");
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace Routing",
+      status: "active",
+    });
 
-    expect(issue).toEqual(
-      expect.objectContaining({
-        id: issueId,
-        identifier: "PAP-1064",
-      }),
-    );
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary Workspace",
+      sourceType: "local_path",
+      cwd: `/tmp/${projectWorkspaceId}`,
+      repoRef: null,
+      isPrimary: true,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Route workspace from mentioned project",
+      status: "todo",
+      priority: "medium",
+      projectId,
+    });
+
+    expect(created.projectId).toBe(projectId);
+    expect(created.projectWorkspaceId).toBe(projectWorkspaceId);
   });
 
   it("returns null instead of throwing for malformed non-uuid issue refs", async () => {
@@ -650,12 +664,6 @@ issueNumber: 1064,
       companyId,
       name: "Workspace Routing",
       status: "active",
-      executionWorkspacePolicy: {
-        defaultProjectWorkspaceId: projectWorkspaceId,
-      },
-
-name: "Workspace project",
-      status: "in_progress",
     });
 
     await db.insert(executionWorkspaces).values([
@@ -1011,24 +1019,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       id: projectWorkspaceId,
       companyId,
       projectId,
-      name: "Primary Workspace",
-      sourceType: "local_path",
-      cwd: `/tmp/${projectWorkspaceId}`,
-      repoRef: null,
-      isPrimary: true,
-    });
-
-    const created = await svc.create(companyId, {
-      title: "Route workspace from mentioned project",
-      status: "todo",
-      priority: "medium",
-      projectId,
-    });
-
-    expect(created.projectId).toBe(projectId);
-    expect(created.projectWorkspaceId).toBe(projectWorkspaceId);
-
-name: "Primary workspace",
+      name: "Primary workspace",
       isPrimary: true,
       sharedWorkspaceKey: "workspace-key",
     });
