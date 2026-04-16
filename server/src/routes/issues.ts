@@ -180,18 +180,13 @@ export function shouldWakeAgentForComment(
 }
 
 const DONE_EVIDENCE_REQUIRED_ERROR =
-  "Cannot mark issue done: latest completion comment must include a GitHub commit or pull request link " +
-  "(https://github.com/<owner>/<repo>/commit/<sha> or /pull/<number>). Evidence is required when the issue has the code label " +
-  "or belongs to a project with a repo-connected workspace. If this was non-code work, remove the code label and ensure the issue " +
-  "is not in a repo-connected project before closing. Otherwise keep the issue open until traceability is available.";
+  "Cannot mark issue done for code-labeled issues: latest completion comment must include a GitHub commit or pull request link " +
+  "(https://github.com/<owner>/<repo>/commit/<sha> or /pull/<number>). If this was non-code work, remove the code label before closing. " +
+  "Otherwise keep the issue open until traceability is available.";
 
 export function buildDoneEvidenceRequiredDetails() {
   return {
     requiredLabel: "code",
-    enforcedSignals: {
-      codeLabel: "Issue has the 'code' label.",
-      projectRepoWorkspace: "Issue belongs to a project with a repo-connected workspace (repoUrl set).",
-    },
     latestCommentRule: "Paperclip checks the transition comment first, then the current latest issue comment.",
     acceptedEvidence: {
       githubCommitUrl: "https://github.com/<owner>/<repo>/commit/<sha>",
@@ -199,8 +194,6 @@ export function buildDoneEvidenceRequiredDetails() {
     },
     fallback: {
       nonCode: "Remove the code label before marking done when the task did not require repository changes.",
-      projectBound:
-        "If the issue is in a repo-connected project but did not change files, move it to a non-repo project or remove the project association.",
       missingTraceability:
         "Keep the issue in_progress or mark it blocked until the latest comment includes a GitHub commit or pull request link.",
     },
@@ -339,9 +332,7 @@ export function issueRequiresDoneEvidence(input: {
   currentLabels: Array<{ id: string; name: string }> | null | undefined;
   nextLabelIds?: string[] | null;
   companyLabels?: Array<{ id: string; name: string }> | null | undefined;
-  repoConnectedProjectWorkspace?: boolean;
 }) {
-  if (input.repoConnectedProjectWorkspace === true) return true;
   return issueRequiresCodeDoneEvidence(input);
 }
 
@@ -1547,30 +1538,10 @@ export function issueRoutes(
       const companyLabels = Array.isArray(updateFields.labelIds)
         ? await svc.listLabels(existing.companyId)
         : null;
-      const labelBasedCodeEvidence = issueRequiresCodeDoneEvidence({
-        currentLabels: existing.labels,
-        nextLabelIds: updateFields.labelIds,
-        companyLabels,
-      });
-      let repoConnectedProjectWorkspace = false;
-      if (!labelBasedCodeEvidence) {
-        const effectiveProjectId = Object.prototype.hasOwnProperty.call(updateFields, "projectId")
-          ? (typeof updateFields.projectId === "string" && updateFields.projectId.trim()
-              ? updateFields.projectId.trim()
-              : null)
-          : (typeof existing.projectId === "string" ? existing.projectId : null);
-        if (effectiveProjectId) {
-          const workspaces = await projectsSvc.listWorkspaces(effectiveProjectId);
-          repoConnectedProjectWorkspace = workspaces.some(
-            (workspace) => typeof workspace.repoUrl === "string" && workspace.repoUrl.trim().length > 0,
-          );
-        }
-      }
       const codeDoneEvidenceRequired = issueRequiresDoneEvidence({
         currentLabels: existing.labels,
         nextLabelIds: updateFields.labelIds,
         companyLabels,
-        repoConnectedProjectWorkspace,
       });
       const uiDoneEvidenceRequired = issueRequiresUiDoneEvidence({
         currentLabels: existing.labels,

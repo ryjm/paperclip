@@ -200,21 +200,15 @@ describe("issue done transition route", () => {
     expect(res.body.labelIds).toEqual([]);
   });
 
-  it("rejects done transitions for repo-connected project issues without code label", async () => {
+  it("allows done transitions for repo-connected project issues without code label", async () => {
     const issue = await createRepoConnectedIssueWithoutCodeLabel();
 
     const res = await request(app)
       .patch(`/api/issues/${issue.id}`)
       .send({ status: "done", comment: "Validation-only update." });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toContain("repo-connected workspace");
-    expect(res.body.details).toMatchObject({
-      requiredLabel: "code",
-      enforcedSignals: {
-        projectRepoWorkspace: "Issue belongs to a project with a repo-connected workspace (repoUrl set).",
-      },
-    });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("done");
   });
 
   it("allows done when the same patch detaches issue from repo-connected project", async () => {
