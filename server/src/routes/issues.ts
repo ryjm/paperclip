@@ -2170,7 +2170,7 @@ export function issueRoutes(
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
-    })();
+    })().catch((err) => logger.warn({ err, issueId: issue.id }, "issue update wakeup pipeline failed"));
 
     res.json({ ...issueResponse, comment });
   });
@@ -2850,7 +2850,7 @@ export function issueRoutes(
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
       }
-    })();
+    })().catch((err) => logger.warn({ err, issueId: currentIssue.id }, "issue comment wakeup pipeline failed"));
 
     res.status(201).json(comment);
   });
