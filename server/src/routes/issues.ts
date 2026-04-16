@@ -1657,11 +1657,7 @@ export function issueRoutes(
           const remoteCheck = await verifyGitHubEvidenceIsRemoteVisible(evidenceCommentBody!, {
             trackedTarget: trackedGitHubTarget,
           });
-          if (!remoteCheck.valid) {
-            if (remoteCheck.softPass) {
-              res.status(422).json(buildDoneEvidenceVerificationUnavailableErrorResponse(remoteCheck.error!));
-              return;
-            }
+          if (!remoteCheck.valid && !remoteCheck.softPass) {
             if (remoteCheck.failureKind === "not_landed") {
               res.status(422).json(
                 buildDoneEvidenceNotLandedErrorResponse(remoteCheck.error!, trackedGitHubTarget),
@@ -1677,7 +1673,42 @@ export function issueRoutes(
 
     let issue;
     try {
-      issue = await svc.update(id, updateFields);
+      if (transition.decision && decisionId) {
+        const decision = transition.decision;
+        issue = await db.transaction(async (tx) => {
+          const updated = await svc.update(
+            id,
+            {
+              ...updateFields,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            tx,
+          );
+          if (!updated) return null;
+
+          await tx.insert(issueExecutionDecisions).values({
+            id: decisionId,
+            companyId: updated.companyId,
+            issueId: updated.id,
+            stageId: decision.stageId,
+            stageType: decision.stageType,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            outcome: decision.outcome,
+            body: decision.body,
+            createdByRunId: actor.runId ?? null,
+          });
+
+          return updated;
+        });
+      } else {
+        issue = await svc.update(id, {
+          ...updateFields,
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        });
+      }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(

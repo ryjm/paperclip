@@ -231,6 +231,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
   const workspaceBranch = asString(workspaceContext.branchName, "");
+  const workspaceObservedBranch = asString(workspaceContext.observedBranchName, "");
+  const workspaceObservedHead = asString(workspaceContext.observedHeadSha, "");
   const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
   const agentHome = asString(workspaceContext.agentHome, "");
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
@@ -250,7 +252,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : [];
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0 && workspaceCwd.length === 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
@@ -348,6 +350,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (workspaceBranch) {
     env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
   }
+  if (workspaceObservedBranch) {
+    env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH = workspaceObservedBranch;
+  }
+  if (workspaceObservedHead) {
+    env.PAPERCLIP_WORKSPACE_OBSERVED_HEAD = workspaceObservedHead;
+  }
   if (workspaceWorktreePath) {
     env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
   }
@@ -404,6 +412,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  // Derive AGENT_HOME from instructionsFilePath when not already set from workspace context
+  if (!env.AGENT_HOME && instructionsFilePath) {
+    env.AGENT_HOME = path.dirname(instructionsFilePath);
+  }
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
   let instructionsChars = 0;

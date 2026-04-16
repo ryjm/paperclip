@@ -27,6 +27,7 @@ import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  detectClaudeQuotaCooldown,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -102,6 +103,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "") || null;
   const workspaceRepoRef = asString(workspaceContext.repoRef, "") || null;
   const workspaceBranch = asString(workspaceContext.branchName, "") || null;
+  const workspaceObservedBranch = asString(workspaceContext.observedBranchName, "") || null;
+  const workspaceObservedHead = asString(workspaceContext.observedHeadSha, "") || null;
   const workspaceWorktreePath = asString(workspaceContext.worktreePath, "") || null;
   const agentHome = asString(workspaceContext.agentHome, "") || null;
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
@@ -121,7 +124,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     : [];
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0 && workspaceCwd.length === 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
@@ -198,6 +201,12 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (workspaceBranch) {
     env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
+  }
+  if (workspaceObservedBranch) {
+    env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH = workspaceObservedBranch;
+  }
+  if (workspaceObservedHead) {
+    env.PAPERCLIP_WORKSPACE_OBSERVED_HEAD = workspaceObservedHead;
   }
   if (workspaceWorktreePath) {
     env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
@@ -329,6 +338,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
   } = runtimeConfig;
+  // Derive AGENT_HOME from instructionsFilePath when not already set from workspace context
+  if (!env.AGENT_HOME && instructionsFilePath) {
+    env.AGENT_HOME = path.dirname(instructionsFilePath);
+  }
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -523,10 +536,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: proc.stdout,
       stderr: proc.stderr,
     });
-    const errorMeta =
-      loginMeta.loginUrl != null
+    const quotaCooldown = detectClaudeQuotaCooldown({
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+    });
+    const errorMeta: Record<string, unknown> | undefined =
+      loginMeta.loginUrl != null || quotaCooldown != null
         ? {
-            loginUrl: loginMeta.loginUrl,
+            ...(loginMeta.loginUrl != null ? { loginUrl: loginMeta.loginUrl } : {}),
+            ...(quotaCooldown != null ? { wakeCooldown: quotaCooldown } : {}),
           }
         : undefined;
 
@@ -548,7 +567,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorCode: quotaCooldown ? quotaCooldown.errorCode : loginMeta.requiresLogin ? "claude_auth_required" : null,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
