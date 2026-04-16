@@ -1449,8 +1449,10 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     const issue = await svc.create(companyId, {
       ...req.body,
+      ...(executionPolicy !== undefined ? { executionPolicy } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });

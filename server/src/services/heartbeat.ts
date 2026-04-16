@@ -4797,7 +4797,7 @@ export function heartbeatService(db: Db) {
             : outcome === "cancelled"
               ? "cancelled"
               : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
+                ? (wakeCooldown?.errorCode ?? adapterResult.errorCode ?? "adapter_failed")
                 : null,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
@@ -4844,8 +4844,33 @@ export function heartbeatService(db: Db) {
             );
           }
         }
-        await finalizeIssueCommentPolicy(finalizedRun, agent);
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        if (!wakeCooldown) {
+          await finalizeIssueCommentPolicy(finalizedRun, agent);
+        }
+        if (wakeCooldown && issueId) {
+          // Cooldown path: revert the issue from in_progress back to todo and
+          // clear the execution lock without promoting deferred wakeups (the agent
+          // is on cooldown and should not be woken again until it expires).
+          await db
+            .update(issues)
+            .set({
+              status: "todo",
+              checkoutRunId: null,
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, issueId),
+                eq(issues.status, "in_progress"),
+                eq(issues.assigneeAgentId, agent.id),
+              ),
+            );
+        } else {
+          await releaseIssueExecutionAndPromote(finalizedRun);
+        }
       }
 
       if (finalizedRun) {
