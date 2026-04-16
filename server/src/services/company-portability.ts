@@ -3090,7 +3090,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       selectedProjects.set(match.id, match);
       const projectIssues = await issuesSvc.list(companyId, { projectId: match.id });
       for (const issue of projectIssues) {
-        selectedIssues.set(issue.id, issue);
+        selectedIssues.set(issue.id, issue as any);
       }
       for (const routine of allRoutines.filter((entry) => entry.projectId === match.id)) {
         selectedRoutines.set(routine.id, routine);
@@ -3106,7 +3106,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (include.issues && selectedIssues.size === 0) {
       const allIssues = await issuesSvc.list(companyId);
       for (const issue of allIssues) {
-        selectedIssues.set(issue.id, issue);
+        selectedIssues.set(issue.id, issue as any);
         if (issue.projectId) {
           const parentProject = projectById.get(issue.projectId);
           if (parentProject) selectedProjects.set(parentProject.id, parentProject);

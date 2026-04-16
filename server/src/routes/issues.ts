@@ -769,6 +769,33 @@ export function issueRoutes(
     return rawId;
   }
 
+  async function resolveIssueProjectAndGoal(issue: {
+    companyId: string;
+    projectId: string | null;
+    goalId: string | null;
+  }) {
+    const projectPromise = issue.projectId ? projectsSvc.getById(issue.projectId) : Promise.resolve(null);
+    const directGoalPromise = issue.goalId ? goalsSvc.getById(issue.goalId) : Promise.resolve(null);
+    const [project, directGoal] = await Promise.all([projectPromise, directGoalPromise]);
+
+    if (directGoal) {
+      return { project, goal: directGoal };
+    }
+
+    const projectGoalId = project?.goalId ?? project?.goalIds[0] ?? null;
+    if (projectGoalId) {
+      const projectGoal = await goalsSvc.getById(projectGoalId);
+      return { project, goal: projectGoal };
+    }
+
+    if (!issue.projectId) {
+      const defaultGoal = await goalsSvc.getDefaultCompanyGoal(issue.companyId);
+      return { project, goal: defaultGoal };
+    }
+
+    return { project, goal: null };
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -842,6 +869,8 @@ export function issueRoutes(
       originId: req.query.originId as string | undefined,
       includeRoutineExecutions:
         req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
+      excludeRoutineExecutions:
+        req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
       q: req.query.q as string | undefined,
     });
     res.json(result);
@@ -909,16 +938,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [ancestors, project, goal, mentionedProjectIds, documentPayload] = await Promise.all([
+    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
-      svc.findMentionedProjectIds(issue.id),
+      svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
       documentsSvc.getIssueDocumentPayload(issue),
+      svc.getRelationSummaries(issue.id),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -931,6 +956,8 @@ export function issueRoutes(
       ...issue,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
+      blockedBy: relations.blockedBy,
+      blocks: relations.blocks,
       ...documentPayload,
       project: project ?? null,
       goal: goal ?? null,
@@ -954,16 +981,14 @@ export function issueRoutes(
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [ancestors, project, goal, commentCursor, wakeComment] = await Promise.all([
+    const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, attachments] =
+      await Promise.all([
+      resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
+      svc.getRelationSummaries(issue.id),
+      svc.listAttachments(issue.id),
     ]);
 
     res.json({
@@ -977,6 +1002,8 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
+        blockedBy: relations.blockedBy,
+        blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         updatedAt: issue.updatedAt,
@@ -1010,6 +1037,13 @@ export function issueRoutes(
         wakeComment && wakeComment.issueId === issue.id
           ? wakeComment
           : null,
+      attachments: attachments.map((a) => ({
+        id: a.id,
+        filename: a.originalFilename,
+        mimeType: a.contentType,
+        size: a.byteSize,
+        createdAt: a.createdAt,
+      })),
     });
   });
 
