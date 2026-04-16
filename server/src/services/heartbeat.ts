@@ -423,56 +423,17 @@ const heartbeatRunListResultColumns = {
   resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
 } as const;
 
-const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
+const heartbeatRunResultJsonSizeBytesColumn = sql<number | null>`
   case
     when ${heartbeatRuns.resultJson} is null then null
-    when pg_column_size(${heartbeatRuns.resultJson}) <= ${HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES}
-      then ${heartbeatRuns.resultJson}
-    else jsonb_strip_nulls(
-      jsonb_build_object(
-        'summary', left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'result', left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'message', left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'error', left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'stdout', left(${heartbeatRuns.resultJson} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
-        'stderr', left(${heartbeatRuns.resultJson} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
-        'stdoutTruncated', case
-          when length(${heartbeatRuns.resultJson} ->> 'stdout') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
-            then to_jsonb(true)
-          else null
-        end,
-        'stderrTruncated', case
-          when length(${heartbeatRuns.resultJson} ->> 'stderr') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
-            then to_jsonb(true)
-          else null
-        end,
-        'costUsd', coalesce(
-          ${heartbeatRuns.resultJson} -> 'costUsd',
-          ${heartbeatRuns.resultJson} -> 'cost_usd',
-          ${heartbeatRuns.resultJson} -> 'total_cost_usd'
-        ),
-        'cost_usd', coalesce(
-          ${heartbeatRuns.resultJson} -> 'cost_usd',
-          ${heartbeatRuns.resultJson} -> 'costUsd',
-          ${heartbeatRuns.resultJson} -> 'total_cost_usd'
-        ),
-        'total_cost_usd', coalesce(
-          ${heartbeatRuns.resultJson} -> 'total_cost_usd',
-          ${heartbeatRuns.resultJson} -> 'cost_usd',
-          ${heartbeatRuns.resultJson} -> 'costUsd'
-        ),
-        'truncated', true,
-        'truncationReason', 'oversized_result_json',
-        'originalSizeBytes', pg_column_size(${heartbeatRuns.resultJson})
-      )
-    )
+    else pg_column_size(${heartbeatRuns.resultJson})
   end
-`.as("resultJson");
+`.as("resultJsonSizeBytes");
 
-const heartbeatRunSafeColumns = {
+const heartbeatRunStoredColumns = {
   ...getTableColumns(heartbeatRuns),
   processGroupId: heartbeatRunProcessGroupIdColumn,
-  resultJson: heartbeatRunSafeResultJsonColumn,
+  resultJsonSizeBytes: heartbeatRunResultJsonSizeBytesColumn,
 } as const;
 
 const heartbeatRunLogAccessColumns = {
@@ -494,8 +455,49 @@ const heartbeatRunIssueSummaryColumns = {
   issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
 } as const;
 
+type HeartbeatRunRecord = typeof heartbeatRuns.$inferSelect;
+
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
+}
+
+function truncateRunResultText(value: unknown, maxChars: number) {
+  if (typeof value !== "string") return null;
+  return value.length <= maxChars ? value : value.slice(0, maxChars);
+}
+
+function sanitizeRunResultJson(
+  resultJson: Record<string, unknown> | null,
+  resultJsonSizeBytes: number | null,
+): Record<string, unknown> | null {
+  if (!resultJson) return null;
+  if (resultJsonSizeBytes === null || resultJsonSizeBytes <= HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES) {
+    return resultJson;
+  }
+
+  const stdout = typeof resultJson.stdout === "string" ? resultJson.stdout : null;
+  const stderr = typeof resultJson.stderr === "string" ? resultJson.stderr : null;
+  const costValue = resultJson.costUsd ?? resultJson.cost_usd ?? resultJson.total_cost_usd ?? null;
+  const safeResultJson = {
+    summary: truncateRunResultText(resultJson.summary, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS),
+    result: truncateRunResultText(resultJson.result, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS),
+    message: truncateRunResultText(resultJson.message, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS),
+    error: truncateRunResultText(resultJson.error, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS),
+    stdout: truncateRunResultText(stdout, HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS),
+    stderr: truncateRunResultText(stderr, HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS),
+    stdoutTruncated: stdout !== null && stdout.length > HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS ? true : null,
+    stderrTruncated: stderr !== null && stderr.length > HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS ? true : null,
+    costUsd: costValue,
+    cost_usd: costValue,
+    total_cost_usd: costValue,
+    truncated: true,
+    truncationReason: "oversized_result_json",
+    originalSizeBytes: resultJsonSizeBytes,
+  } satisfies Record<string, unknown>;
+
+  return Object.fromEntries(
+    Object.entries(safeResultJson).filter(([, value]) => value !== null && value !== undefined),
+  );
 }
 
 function redactInlineBase64ImageData(chunk: string) {
@@ -1992,12 +1994,24 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
+  async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }): Promise<HeartbeatRunRecord | null> {
     return db
-      .select(opts?.unsafeFullResultJson ? getTableColumns(heartbeatRuns) : heartbeatRunSafeColumns)
+      .select(heartbeatRunStoredColumns)
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => {
+        const row = rows[0];
+        if (!row) return null;
+
+        const { resultJsonSizeBytes, ...run } = row;
+        if (opts?.unsafeFullResultJson) return run;
+
+        const safeRun: HeartbeatRunRecord = {
+          ...run,
+          resultJson: sanitizeRunResultJson(run.resultJson, resultJsonSizeBytes),
+        };
+        return safeRun;
+      });
   }
 
   async function getRunLogAccess(runId: string) {
@@ -3539,7 +3553,7 @@ export function heartbeatService(db: Db) {
         processLossRetryContext.canRetry;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
-      let finalizedRun = await setRunStatus(run.id, "failed", {
+      let finalizedRun: HeartbeatRunRecord | null = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
@@ -4514,11 +4528,11 @@ export function heartbeatService(db: Db) {
             : sanitizedChunk;
 
         publishLiveEvent({
-          companyId: run.companyId,
+          companyId: currentRun.companyId,
           type: "heartbeat.run.log",
           payload: {
-            runId: run.id,
-            agentId: run.agentId,
+            runId: currentRun.id,
+            agentId: currentRun.agentId,
             ts,
             stream,
             chunk: payloadChunk,
@@ -4624,7 +4638,7 @@ export function heartbeatService(db: Db) {
         onLog,
         onMeta: onAdapterMeta,
         onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, {
+          await persistRunProcessMetadata(currentRun.id, {
             pid: meta.pid,
             processGroupId:
               "processGroupId" in meta && typeof meta.processGroupId === "number"
