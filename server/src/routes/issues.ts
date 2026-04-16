@@ -1158,6 +1158,57 @@ export function issueRoutes(
     res.json(revisions);
   });
 
+  router.post(
+    "/issues/:id/documents/:key/revisions/:revisionId/restore",
+    validate(restoreIssueDocumentRevisionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const revisionId = req.params.revisionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const result = await documentsSvc.restoreIssueDocumentRevision({
+        issueId: issue.id,
+        key: keyParsed.data,
+        revisionId,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_restored",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+          format: result.document.format,
+          revisionNumber: result.document.latestRevisionNumber,
+          restoredFromRevisionId: result.restoredFromRevisionId,
+          restoredFromRevisionNumber: result.restoredFromRevisionNumber,
+        },
+      });
+
+      res.json(result.document);
+    },
+  );
+
   router.delete("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -1919,6 +1970,10 @@ export function issueRoutes(
       existing.status === "blocked" &&
       issue.status === "todo" &&
       req.body.status !== undefined;
+    const statusReroutedToTodo =
+      existing.status === "in_progress" &&
+      issue.status === "todo" &&
+      req.body.status !== undefined;
     const previousExecutionState = parseIssueExecutionState(existing.executionState);
     const nextExecutionState = parseIssueExecutionState(issue.executionState);
     const executionStageWakeup = buildExecutionStageWakeup({
@@ -1972,7 +2027,7 @@ export function issueRoutes(
         });
       }
 
-      if (!assigneeChanged && (statusChangedFromBacklog || statusChangedFromBlockedToTodo) && issue.assigneeAgentId) {
+      if (!assigneeChanged && (statusChangedFromBacklog || statusChangedFromBlockedToTodo || statusReroutedToTodo) && issue.assigneeAgentId) {
         addWakeup(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
@@ -2177,6 +2232,12 @@ export function issueRoutes(
         });
         return;
       }
+    }
+
+    const closedExecutionWorkspaceForCheckout = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspaceForCheckout) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspaceForCheckout);
+      return;
     }
 
     if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
@@ -2398,6 +2459,105 @@ export function issueRoutes(
     res.json(votes);
   });
 
+  router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can vote on AI feedback" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await feedback.saveIssueVote({
+      issueId: id,
+      targetType: req.body.targetType,
+      targetId: req.body.targetId,
+      vote: req.body.vote,
+      reason: req.body.reason,
+      authorUserId: req.actor.userId ?? "local-board",
+      allowSharing: req.body.allowSharing === true,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.feedback_vote_saved",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        targetType: result.vote.targetType,
+        targetId: result.vote.targetId,
+        vote: result.vote.vote,
+        hasReason: Boolean(result.vote.reason),
+        sharingEnabled: result.sharingEnabled,
+      },
+    });
+
+    if (result.consentEnabledNow) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.feedback_data_sharing_updated",
+        entityType: "company",
+        entityId: issue.companyId,
+        details: {
+          feedbackDataSharingEnabled: true,
+          source: "issue_feedback_vote",
+        },
+      });
+    }
+
+    if (result.persistedSharingPreference) {
+      const settings = await instanceSettings.get();
+      const companyIds = await instanceSettings.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.general_updated",
+            entityType: "instance_settings",
+            entityId: settings.id,
+            details: {
+              general: settings.general,
+              changedKeys: ["feedbackDataSharingPreference"],
+              source: "issue_feedback_vote",
+            },
+          }),
+        ),
+      );
+    }
+
+    if (result.sharingEnabled && result.traceId && feedbackExportService) {
+      try {
+        await feedbackExportService.flushPendingFeedbackTraces({
+          companyId: issue.companyId,
+          traceId: result.traceId,
+          limit: 1,
+        });
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id, traceId: result.traceId }, "failed to flush shared feedback trace immediately");
+      }
+    }
+
+    res.status(201).json(result.vote);
+  });
+
   router.get("/issues/:id/feedback-traces", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2470,6 +2630,11 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+    const closedExecutionWorkspaceForComment = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspaceForComment) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspaceForComment);
+      return;
+    }
 
     const actor = getActorInfo(req);
     const reopenRequested = req.body.reopen === true;
@@ -2801,11 +2966,17 @@ export function issueRoutes(
     assertCompanyAccess(req, attachment.companyId);
 
     const object = await storage.getObject(attachment.companyId, attachment.objectKey);
-    res.setHeader("Content-Type", attachment.contentType || object.contentType || "application/octet-stream");
+    const responseContentType = normalizeContentType(attachment.contentType || object.contentType);
+    res.setHeader("Content-Type", responseContentType);
     res.setHeader("Content-Length", String(attachment.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (responseContentType === SVG_CONTENT_TYPE) {
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
+    }
     const filename = attachment.originalFilename ?? "attachment";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
+    res.setHeader("Content-Disposition", `${disposition}; filename="${filename.replaceAll('"', '')}"`);
 
     object.stream.on("error", (err) => {
       next(err);

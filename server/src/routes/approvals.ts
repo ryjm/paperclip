@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
+  isUuidLike,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
@@ -53,6 +54,10 @@ export function approvalRoutes(db: Db) {
 
   router.get("/approvals/:id", async (req, res) => {
     const id = req.params.id as string;
+    if (!isUuidLike(id)) {
+      res.status(400).json({ error: "Invalid approval id" });
+      return;
+    }
     const approval = await svc.getById(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
@@ -117,6 +122,10 @@ export function approvalRoutes(db: Db) {
 
   router.get("/approvals/:id/issues", async (req, res) => {
     const id = req.params.id as string;
+    if (!isUuidLike(id)) {
+      res.status(400).json({ error: "Invalid approval id" });
+      return;
+    }
     const approval = await svc.getById(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
@@ -315,6 +324,10 @@ export function approvalRoutes(db: Db) {
 
   router.get("/approvals/:id/comments", async (req, res) => {
     const id = req.params.id as string;
+    if (!isUuidLike(id)) {
+      res.status(400).json({ error: "Invalid approval id" });
+      return;
+    }
     const approval = await svc.getById(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });

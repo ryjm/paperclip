@@ -4308,14 +4308,20 @@ export function heartbeatService(db: Db) {
         requestedExecutionWorkspaceMode === "isolated_workspace" ||
         requestedExecutionWorkspaceMode === "operator_branch";
       const nextIssuePatch: Record<string, unknown> = {};
-      if (resolvedProjectId && issueRef?.projectId !== resolvedProjectId) {
+      const projectIsChanging = resolvedProjectId != null && issueRef?.projectId !== resolvedProjectId;
+      if (projectIsChanging) {
         nextIssuePatch.projectId = resolvedProjectId;
       }
       if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
         nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
       }
-      if (issueRef?.projectWorkspaceId !== resolvedProjectWorkspaceId) {
-        nextIssuePatch.projectWorkspaceId = resolvedProjectWorkspaceId;
+      // When the project is changing, use the workspace from the resolved run rather than
+      // the issue's existing workspace, which belongs to the old project and would fail validation.
+      const effectiveProjectWorkspaceId = projectIsChanging
+        ? (resolvedWorkspace.workspaceId ?? null)
+        : resolvedProjectWorkspaceId;
+      if (issueRef?.projectWorkspaceId !== effectiveProjectWorkspaceId) {
+        nextIssuePatch.projectWorkspaceId = effectiveProjectWorkspaceId;
       }
       if (shouldSwitchIssueToExistingWorkspace) {
         nextIssuePatch.executionWorkspacePreference = "reuse_existing";

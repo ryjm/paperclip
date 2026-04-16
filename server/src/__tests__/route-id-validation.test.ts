@@ -61,6 +61,7 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   secretService: () => mockSecretService,
   projectService: () => mockProjectService,
+  workspaceOperationService: () => ({ createRecorder: vi.fn(() => ({ attachExecutionWorkspaceId: vi.fn() })) }),
   logActivity: mockLogActivity,
 }));
 

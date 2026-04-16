@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
+import { createGoalSchema, updateGoalSchema, isUuidLike } from "@paperclipai/shared";
 import { trackGoalCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { goalService, logActivity } from "../services/index.js";
@@ -20,6 +20,10 @@ export function goalRoutes(db: Db) {
 
   router.get("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
+    if (!isUuidLike(id)) {
+      res.status(400).json({ error: "Invalid goal id" });
+      return;
+    }
     const goal = await svc.getById(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
@@ -53,6 +57,10 @@ export function goalRoutes(db: Db) {
 
   router.patch("/goals/:id", validate(updateGoalSchema), async (req, res) => {
     const id = req.params.id as string;
+    if (!isUuidLike(id)) {
+      res.status(400).json({ error: "Invalid goal id" });
+      return;
+    }
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Goal not found" });
@@ -82,6 +90,10 @@ export function goalRoutes(db: Db) {
 
   router.delete("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
+    if (!isUuidLike(id)) {
+      res.status(400).json({ error: "Invalid goal id" });
+      return;
+    }
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Goal not found" });

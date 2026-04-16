@@ -1,8 +1,4 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
@@ -11,7 +7,6 @@ import {
   agents,
   companies,
   createDb,
-  ensurePostgresDatabase,
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
@@ -303,6 +298,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
+
   it("reconciles stale execution locks in list results before building inbox data", async () => {
     const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
     const staleRunId = randomUUID();
@@ -364,110 +360,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       agentId,
       runId: staleRunId,
       status: "succeeded",
-
-it("applies result limits to issue search", async () => {
-    const companyId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    const exactIdentifierId = randomUUID();
-    const titleMatchId = randomUUID();
-    const descriptionMatchId = randomUUID();
-
-    await db.insert(issues).values([
-      {
-        id: exactIdentifierId,
-        companyId,
-        issueNumber: 42,
-        identifier: "PAP-42",
-        title: "Completely unrelated",
-        status: "todo",
-        priority: "medium",
-      },
-      {
-        id: titleMatchId,
-        companyId,
-        title: "Search ranking issue",
-        status: "todo",
-        priority: "medium",
-      },
-      {
-        id: descriptionMatchId,
-        companyId,
-        title: "Another item",
-        description: "Contains the search keyword",
-        status: "todo",
-        priority: "medium",
-      },
-    ]);
-
-    const result = await svc.list(companyId, {
-      q: "search",
-      limit: 2,
-    });
-
-    expect(result.map((issue) => issue.id)).toEqual([titleMatchId, descriptionMatchId]);
-  });
-
-  it("ranks comment matches ahead of description-only matches", async () => {
-    const companyId = randomUUID();
-    const commentMatchId = randomUUID();
-    const descriptionMatchId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    await db.insert(issues).values([
-      {
-        id: commentMatchId,
-        companyId,
-        title: "Comment match",
-        status: "todo",
-        priority: "medium",
-      },
-      {
-        id: descriptionMatchId,
-        companyId,
-        title: "Description match",
-        description: "Contains pull/3303 in the description",
-        status: "todo",
-        priority: "medium",
-      },
-    ]);
-
-    await db.insert(issueComments).values({
-      companyId,
-      issueId: commentMatchId,
-      body: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
-    });
-
-    const result = await svc.list(companyId, {
-      q: "pull/3303",
-      limit: 2,
-      includeRoutineExecutions: true,
-    });
-
-    expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
-  });
-
-  it("accepts issue identifiers through getById", async () => {
-    const companyId = randomUUID();
-    const issueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: "PAP",
-      requireBoardApprovalForNewAgents: false,
     });
 
     await db.insert(issues).values({
@@ -603,12 +495,115 @@ it("applies result limits to issue search", async () => {
     });
   });
 
-  it("assigns the default project workspace when creating a project-backed issue without an explicit workspace", async () => {
+  it("applies result limits to issue search", async () => {
     const companyId = randomUUID();
-    const projectId = randomUUID();
-    const projectWorkspaceId = randomUUID();
 
-issueNumber: 1064,
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const exactIdentifierId = randomUUID();
+    const titleMatchId = randomUUID();
+    const descriptionMatchId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: exactIdentifierId,
+        companyId,
+        issueNumber: 42,
+        identifier: "PAP-42",
+        title: "Completely unrelated",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: titleMatchId,
+        companyId,
+        title: "Search ranking issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: descriptionMatchId,
+        companyId,
+        title: "Another item",
+        description: "Contains the search keyword",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const result = await svc.list(companyId, {
+      q: "search",
+      limit: 2,
+    });
+
+    expect(result.map((issue) => issue.id)).toEqual([titleMatchId, descriptionMatchId]);
+  });
+
+  it("ranks comment matches ahead of description-only matches", async () => {
+    const companyId = randomUUID();
+    const commentMatchId = randomUUID();
+    const descriptionMatchId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: commentMatchId,
+        companyId,
+        title: "Comment match",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: descriptionMatchId,
+        companyId,
+        title: "Description match",
+        description: "Contains pull/3303 in the description",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: commentMatchId,
+      body: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
+    });
+
+    const result = await svc.list(companyId, {
+      q: "pull/3303",
+      limit: 2,
+      includeRoutineExecutions: true,
+    });
+
+    expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
+  });
+
+  it("accepts issue identifiers through getById", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1064,
       identifier: "PAP-1064",
       title: "Feedback votes error",
       status: "todo",
@@ -649,13 +644,7 @@ issueNumber: 1064,
     await db.insert(projects).values({
       id: projectId,
       companyId,
-      name: "Workspace Routing",
-      status: "active",
-      executionWorkspacePolicy: {
-        defaultProjectWorkspaceId: projectWorkspaceId,
-      },
-
-name: "Workspace project",
+      name: "Workspace project",
       status: "in_progress",
     });
 
@@ -1045,24 +1034,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       id: projectWorkspaceId,
       companyId,
       projectId,
-      name: "Primary Workspace",
-      sourceType: "local_path",
-      cwd: `/tmp/${projectWorkspaceId}`,
-      repoRef: null,
-      isPrimary: true,
-    });
-
-    const created = await svc.create(companyId, {
-      title: "Route workspace from mentioned project",
-      status: "todo",
-      priority: "medium",
-      projectId,
-    });
-
-    expect(created.projectId).toBe(projectId);
-    expect(created.projectWorkspaceId).toBe(projectWorkspaceId);
-
-name: "Primary workspace",
+      name: "Primary workspace",
       isPrimary: true,
       sharedWorkspaceKey: "workspace-key",
     });

@@ -572,7 +572,8 @@ async function withIssueMetadata(
   rows: IssueRow[],
   loadIssueRelationSummaryMap: IssueRelationSummaryLoader,
 ): Promise<IssueWithLabelsAndRelations[]> {
-  const labeledRows = await withIssueLabels(dbOrTx, rows);
+  const reconciledRows = await reconcileStaleExecutionLocks(dbOrTx, rows);
+  const labeledRows = await withIssueLabels(dbOrTx, reconciledRows);
   return withIssueRelations(dbOrTx, labeledRows, loadIssueRelationSummaryMap);
 }
 
@@ -1209,7 +1210,8 @@ export function issueService(db: Db) {
           desc(issues.updatedAt),
         );
       const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
-      const withLabels = await withIssueLabels(db, rows);
+      const reconciledRows = await reconcileStaleExecutionLocks(db, rows);
+      const withLabels = await withIssueLabels(db, reconciledRows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {

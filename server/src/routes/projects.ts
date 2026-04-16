@@ -61,7 +61,11 @@ export function projectRoutes(db: Db) {
     if (resolved.ambiguous) {
       throw conflict("Project shortname is ambiguous in this company. Use the project ID.");
     }
-    return resolved.project?.id ?? rawId;
+    if (resolved.project) return resolved.project.id;
+    // If the ID was neither a UUID nor a recognised project reference, mark it so
+    // route handlers can reject with 400 rather than hitting the DB with a garbage key.
+    (req as Request & { _projectIdUnresolvable?: boolean })._projectIdUnresolvable = true;
+    return rawId;
   }
 
   router.param("id", async (req, _res, next, rawId) => {
@@ -82,6 +86,10 @@ export function projectRoutes(db: Db) {
 
   router.get("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
+    if ((req as Request & { _projectIdUnresolvable?: boolean })._projectIdUnresolvable) {
+      res.status(400).json({ error: "Invalid project id" });
+      return;
+    }
     const project = await svc.getById(id);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
@@ -150,6 +158,10 @@ export function projectRoutes(db: Db) {
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
     const id = req.params.id as string;
+    if ((req as Request & { _projectIdUnresolvable?: boolean })._projectIdUnresolvable) {
+      res.status(400).json({ error: "Invalid project id" });
+      return;
+    }
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Project not found" });
@@ -597,6 +609,10 @@ export function projectRoutes(db: Db) {
 
   router.delete("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
+    if ((req as Request & { _projectIdUnresolvable?: boolean })._projectIdUnresolvable) {
+      res.status(400).json({ error: "Invalid project id" });
+      return;
+    }
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Project not found" });
