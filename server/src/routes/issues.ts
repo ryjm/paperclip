@@ -57,6 +57,7 @@ import {
   logActivity,
   projectService,
   routineService,
+  secretService,
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
@@ -87,6 +88,13 @@ import {
 } from "./github-evidence.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const GITHUB_TOKEN_ENV_KEY = "GITHUB_TOKEN";
+const BACKEND_GITHUB_VERIFIER_EXPLANATION =
+  "This check runs in Paperclip's backend GitHub verifier, not inside the agent shell, " +
+  "so a working `gh` session in the worker does not satisfy private-repo verification.";
+const BACKEND_GITHUB_VERIFIER_FIX =
+  "Retry when GitHub API/network access is healthy, or configure a backend GITHUB_TOKEN for " +
+  "Paperclip (server env or project env/secret). A worker `gh` login is not used by this verifier.";
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -274,14 +282,15 @@ export function buildDoneEvidenceUnreachableErrorResponse(remoteError: string) {
 export function buildDoneEvidenceVerificationUnavailableErrorResponse(remoteError: string) {
   return {
     error:
-      "Cannot mark issue done: commit evidence could not be verified against GitHub right now. " +
-      "Retry when GitHub access is healthy, or configure GITHUB_TOKEN for private repository verification.",
+      "Cannot mark issue done: Paperclip's backend GitHub verifier could not validate the cited evidence right now. " +
+      BACKEND_GITHUB_VERIFIER_EXPLANATION,
     details: {
       ...buildDoneEvidenceRequiredDetails(),
       remoteVerification: {
         result: "verification_unavailable",
         detail: remoteError,
-        fix: "Retry when GitHub API/network access is healthy, or configure GITHUB_TOKEN so private repos can be verified.",
+        verifierContext: BACKEND_GITHUB_VERIFIER_EXPLANATION,
+        fix: BACKEND_GITHUB_VERIFIER_FIX,
       },
     },
   };
@@ -377,20 +386,44 @@ async function resolveTrackedGitHubEvidenceTarget(
   };
 }
 
-function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
-  return status === "done" || status === "cancelled";
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
-function shouldImplicitlyReopenCommentForAgent(input: {
-  issueStatus: string | null | undefined;
-  assigneeAgentId: string | null | undefined;
-  actorType: "agent" | "user";
-  actorId: string;
-}) {
-  if (!isClosedIssueStatus(input.issueStatus)) return false;
-  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
-  if (input.actorType === "agent" && input.actorId === input.assigneeAgentId) return false;
-  return true;
+function readNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function resolveGitHubEvidenceVerificationToken(
+  db: Db,
+  projectsSvc: ReturnType<typeof projectService>,
+  input: {
+    companyId: string;
+    projectId: string | null | undefined;
+  },
+): Promise<string | null> {
+  if (input.projectId) {
+    const project = await projectsSvc.getById(input.projectId);
+    const env = asRecord(project?.env);
+    const githubTokenBinding = env?.[GITHUB_TOKEN_ENV_KEY];
+    if (githubTokenBinding !== undefined) {
+      const secretsSvc = secretService(db);
+      const resolved = await secretsSvc.resolveEnvBindings(input.companyId, {
+        [GITHUB_TOKEN_ENV_KEY]: githubTokenBinding,
+      });
+      const projectToken = readNonEmptyString(resolved.env[GITHUB_TOKEN_ENV_KEY]);
+      if (projectToken) return projectToken;
+    }
+  }
+
+  return readNonEmptyString(process.env.GITHUB_TOKEN);
+}
+
+function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
+  return status === "done" || status === "cancelled";
 }
 
 function diffExecutionParticipants(
@@ -565,6 +598,33 @@ export function issueRoutes(
       throw new HttpError(400, `Invalid ${field} query value`);
     }
     return parsed;
+  }
+
+  function readProjectGoalId(project: unknown): string | null {
+    if (!project || typeof project !== "object") return null;
+    const directGoalId =
+      typeof (project as { goalId?: unknown }).goalId === "string"
+        ? (project as { goalId: string }).goalId.trim()
+        : "";
+    if (directGoalId.length > 0) return directGoalId;
+    const goalIds = Array.isArray((project as { goalIds?: unknown }).goalIds)
+      ? (project as { goalIds: unknown[] }).goalIds
+      : [];
+    return goalIds.find((value): value is string => typeof value === "string" && value.trim().length > 0) ?? null;
+  }
+
+  async function resolveEffectiveIssueGoal(
+    issue: { companyId: string; projectId: string | null; goalId: string | null },
+    project: unknown,
+  ) {
+    const effectiveGoalId = issue.goalId ?? readProjectGoalId(project);
+    if (effectiveGoalId) {
+      return goalsSvc.getById(effectiveGoalId);
+    }
+    if (!issue.projectId) {
+      return goalsSvc.getDefaultCompanyGoal(issue.companyId);
+    }
+    return null;
   }
 
   async function runSingleFileUpload(req: Request, res: Response) {
@@ -909,17 +969,15 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [ancestors, project, goal, mentionedProjectIds, documentPayload] = await Promise.all([
+    const issueWithRelations = issue as typeof issue & { blockedBy?: unknown; blocks?: unknown };
+    const [ancestors, project, mentionedProjectIds, documentPayload, relationSummaries] = await Promise.all([
       svc.getAncestors(issue.id),
       issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
       svc.findMentionedProjectIds(issue.id),
       documentsSvc.getIssueDocumentPayload(issue),
+      svc.getRelationSummaries(issue.id),
     ]);
+    const goal = await resolveEffectiveIssueGoal(issue, project);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
@@ -930,6 +988,8 @@ export function issueRoutes(
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
+      blockedBy: issueWithRelations.blockedBy ?? relationSummaries.blockedBy,
+      blocks: issueWithRelations.blocks ?? relationSummaries.blocks,
       ancestors,
       ...documentPayload,
       project: project ?? null,
@@ -954,17 +1014,16 @@ export function issueRoutes(
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [ancestors, project, goal, commentCursor, wakeComment] = await Promise.all([
+    const issueWithRelations = issue as typeof issue & { blockedBy?: unknown; blocks?: unknown };
+    const [ancestors, project, commentCursor, wakeComment, relationSummaries, attachments] = await Promise.all([
       svc.getAncestors(issue.id),
       issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
+      svc.getRelationSummaries(issue.id),
+      svc.listAttachments(issue.id),
     ]);
+    const goal = await resolveEffectiveIssueGoal(issue, project);
 
     res.json({
       issue: {
@@ -980,6 +1039,8 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         updatedAt: issue.updatedAt,
+        blockedBy: issueWithRelations.blockedBy ?? relationSummaries.blockedBy,
+        blocks: issueWithRelations.blocks ?? relationSummaries.blocks,
       },
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,
@@ -1010,6 +1071,7 @@ export function issueRoutes(
         wakeComment && wakeComment.issueId === issue.id
           ? wakeComment
           : null,
+      attachments: attachments.map(withContentPath),
     });
   });
 
@@ -1123,6 +1185,57 @@ export function issueRoutes(
     const revisions = await documentsSvc.listIssueDocumentRevisions(issue.id, keyParsed.data);
     res.json(revisions);
   });
+
+  router.post(
+    "/issues/:id/documents/:key/revisions/:revisionId/restore",
+    validate(restoreIssueDocumentRevisionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const revisionId = req.params.revisionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const result = await documentsSvc.restoreIssueDocumentRevision({
+        issueId: issue.id,
+        key: keyParsed.data,
+        revisionId,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_restored",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+          format: result.document.format,
+          revisionNumber: result.document.latestRevisionNumber,
+          restoredFromRevisionId: result.restoredFromRevisionId,
+          restoredFromRevisionNumber: result.restoredFromRevisionNumber,
+        },
+      });
+
+      res.json(result.document);
+    },
+  );
 
   router.delete("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
@@ -1425,15 +1538,7 @@ export function issueRoutes(
     } = req.body;
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
-    const effectiveReopenRequested =
-      reopenRequested ||
-      (!!commentBody &&
-        shouldImplicitlyReopenCommentForAgent({
-          issueStatus: existing.status,
-          assigneeAgentId: requestedAssigneeAgentId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-        }));
+    const effectiveReopenRequested = reopenRequested === true;
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate = req.actor.type === "agent" && Object.keys(updateFields).length > 0;
@@ -1507,6 +1612,7 @@ export function issueRoutes(
       commentBody,
     });
     const decisionId = transition.decision ? randomUUID() : null;
+    const recordedDecision = decisionId && transition.decision ? transition.decision : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;
       if (!nextExecutionState || typeof nextExecutionState !== "object") {
@@ -1617,11 +1723,20 @@ export function issueRoutes(
             projectId: projectIdForEvidence,
             projectWorkspaceId: projectWorkspaceIdForEvidence,
           });
+          const githubVerificationToken = await resolveGitHubEvidenceVerificationToken(
+            db,
+            projectsSvc,
+            {
+              companyId: existing.companyId,
+              projectId: projectIdForEvidence,
+            },
+          );
 
           // Verify commit evidence is actually reachable on the remote and landed
           // on the tracked base branch when the issue belongs to a repo-backed project.
           const remoteCheck = await verifyGitHubEvidenceIsRemoteVisible(evidenceCommentBody!, {
             trackedTarget: trackedGitHubTarget,
+            githubToken: githubVerificationToken,
           });
           if (!remoteCheck.valid) {
             if (remoteCheck.softPass) {
@@ -1643,7 +1758,29 @@ export function issueRoutes(
 
     let issue;
     try {
-      issue = await svc.update(id, updateFields);
+      if (decisionId && recordedDecision) {
+        issue = await db.transaction(async (tx) => {
+          const updatedIssue = await svc.update(id, updateFields, tx);
+          if (!updatedIssue) return null;
+
+          await tx.insert(issueExecutionDecisions).values({
+            id: decisionId,
+            companyId: updatedIssue.companyId,
+            issueId: updatedIssue.id,
+            stageId: recordedDecision.stageId,
+            stageType: recordedDecision.stageType,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            outcome: recordedDecision.outcome,
+            body: recordedDecision.body,
+            createdByRunId: actor.runId ?? null,
+          });
+
+          return updatedIssue;
+        });
+      } else {
+        issue = await svc.update(id, updateFields);
+      }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
@@ -1879,7 +2016,12 @@ export function issueRoutes(
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if (
+        assigneeChanged &&
+        issue.assigneeAgentId &&
+        issue.status !== "backlog" &&
+        !isClosedIssueStatus(issue.status)
+      ) {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -1960,31 +2102,33 @@ export function issueRoutes(
           });
         }
 
-        let mentionedIds: string[] = [];
-        try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
-        } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-        }
+        if (!isClosedIssueStatus(issue.status)) {
+          let mentionedIds: string[] = [];
+          try {
+            mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+          } catch (err) {
+            logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+          }
 
-        for (const mentionedId of mentionedIds) {
-          if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
-          addWakeup(mentionedId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_comment_mentioned",
-            payload: { issueId: id, commentId: comment.id },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: id,
-              taskId: id,
-              commentId: comment.id,
-              wakeCommentId: comment.id,
-              wakeReason: "issue_comment_mentioned",
-              source: "comment.mention",
-            },
-          });
+          for (const mentionedId of mentionedIds) {
+            if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+            addWakeup(mentionedId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_comment_mentioned",
+              payload: { issueId: id, commentId: comment.id },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: id,
+                taskId: id,
+                commentId: comment.id,
+                wakeCommentId: comment.id,
+                wakeReason: "issue_comment_mentioned",
+                source: "comment.mention",
+              },
+            });
+          }
         }
       }
 
@@ -2112,6 +2256,12 @@ export function issueRoutes(
         });
         return;
       }
+    }
+
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspace) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
     }
 
     if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
@@ -2333,6 +2483,105 @@ export function issueRoutes(
     res.json(votes);
   });
 
+  router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can vote on AI feedback" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await feedback.saveIssueVote({
+      issueId: id,
+      targetType: req.body.targetType,
+      targetId: req.body.targetId,
+      vote: req.body.vote,
+      reason: req.body.reason,
+      authorUserId: req.actor.userId ?? "local-board",
+      allowSharing: req.body.allowSharing === true,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.feedback_vote_saved",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        targetType: result.vote.targetType,
+        targetId: result.vote.targetId,
+        vote: result.vote.vote,
+        hasReason: Boolean(result.vote.reason),
+        sharingEnabled: result.sharingEnabled,
+      },
+    });
+
+    if (result.consentEnabledNow) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.feedback_data_sharing_updated",
+        entityType: "company",
+        entityId: issue.companyId,
+        details: {
+          feedbackDataSharingEnabled: true,
+          source: "issue_feedback_vote",
+        },
+      });
+    }
+
+    if (result.persistedSharingPreference) {
+      const settings = await instanceSettings.get();
+      const companyIds = await instanceSettings.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.general_updated",
+            entityType: "instance_settings",
+            entityId: settings.id,
+            details: {
+              general: settings.general,
+              changedKeys: ["feedbackDataSharingPreference"],
+              source: "issue_feedback_vote",
+            },
+          }),
+        ),
+      );
+    }
+
+    if (result.sharingEnabled && result.traceId && feedbackExportService) {
+      try {
+        await feedbackExportService.flushPendingFeedbackTraces({
+          companyId: issue.companyId,
+          traceId: result.traceId,
+          limit: 1,
+        });
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id, traceId: result.traceId }, "failed to flush shared feedback trace immediately");
+      }
+    }
+
+    res.status(201).json(result.vote);
+  });
+
   router.get("/issues/:id/feedback-traces", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2405,19 +2654,17 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspace) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
 
     const actor = getActorInfo(req);
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);
-    const effectiveReopenRequested =
-      reopenRequested ||
-      shouldImplicitlyReopenCommentForAgent({
-        issueStatus: issue.status,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-      });
+    const effectiveReopenRequested = reopenRequested === true;
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
@@ -2584,33 +2831,35 @@ export function issueRoutes(
         }
       }
 
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-      }
+      if (!isClosedIssueStatus(currentIssue.status)) {
+        let mentionedIds: string[] = [];
+        try {
+          mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+        } catch (err) {
+          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+        }
 
-      for (const mentionedId of mentionedIds) {
-        if (!shouldWakeAgentForComment(actor, mentionedId)) continue;
-        if (wakeups.has(mentionedId)) continue;
-        if (actorIsAgent && actor.actorId === mentionedId) continue;
-        wakeups.set(mentionedId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_comment_mentioned",
-          payload: { issueId: id, commentId: comment.id },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: id,
-            taskId: id,
-            commentId: comment.id,
-            wakeCommentId: comment.id,
-            wakeReason: "issue_comment_mentioned",
-            source: "comment.mention",
-          },
-        });
+        for (const mentionedId of mentionedIds) {
+          if (!shouldWakeAgentForComment(actor, mentionedId)) continue;
+          if (wakeups.has(mentionedId)) continue;
+          if (actorIsAgent && actor.actorId === mentionedId) continue;
+          wakeups.set(mentionedId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_comment_mentioned",
+            payload: { issueId: id, commentId: comment.id },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: id,
+              taskId: id,
+              commentId: comment.id,
+              wakeCommentId: comment.id,
+              wakeReason: "issue_comment_mentioned",
+              source: "comment.mention",
+            },
+          });
+        }
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {
@@ -2668,7 +2917,7 @@ export function issueRoutes(
       res.status(400).json({ error: "Missing file field 'file'" });
       return;
     }
-    const contentType = (file.mimetype || "").toLowerCase();
+    const contentType = normalizeContentType(file.mimetype);
     if (!isAllowedContentType(contentType)) {
       res.status(422).json({ error: `Unsupported attachment type: ${contentType || "unknown"}` });
       return;
@@ -2736,11 +2985,17 @@ export function issueRoutes(
     assertCompanyAccess(req, attachment.companyId);
 
     const object = await storage.getObject(attachment.companyId, attachment.objectKey);
-    res.setHeader("Content-Type", attachment.contentType || object.contentType || "application/octet-stream");
+    const responseContentType = normalizeContentType(attachment.contentType || object.contentType);
+    res.setHeader("Content-Type", responseContentType);
     res.setHeader("Content-Length", String(attachment.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (responseContentType === SVG_CONTENT_TYPE) {
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
+    }
     const filename = attachment.originalFilename ?? "attachment";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
+    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
     object.stream.on("error", (err) => {
       next(err);

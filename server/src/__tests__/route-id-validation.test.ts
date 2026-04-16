@@ -52,6 +52,12 @@ const mockProjectService = vi.hoisted(() => ({
   removeWorkspace: vi.fn(),
 }));
 
+const mockWorkspaceOperationService = vi.hoisted(() => ({
+  getForProject: vi.fn(),
+  upsertForProject: vi.fn(),
+  deleteForProject: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
@@ -61,6 +67,7 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   secretService: () => mockSecretService,
   projectService: () => mockProjectService,
+  workspaceOperationService: () => mockWorkspaceOperationService,
   logActivity: mockLogActivity,
 }));
 
@@ -86,24 +93,24 @@ describe("goal routes malformed id", () => {
     return app;
   }
 
-  it("rejects non-UUID id with 400 on GET /goals/:id", async () => {
+  it("returns 404 for malformed GET /goals/:id lookups", async () => {
     const res = await request(buildApp()).get("/api/goals/undefined");
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid goal id/);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Goal not found/);
   });
 
-  it("rejects non-UUID id with 400 on PATCH /goals/:id", async () => {
+  it("returns 404 for malformed PATCH /goals/:id lookups", async () => {
     const res = await request(buildApp())
       .patch("/api/goals/not-a-uuid")
       .send({ title: "test" });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid goal id/);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Goal not found/);
   });
 
-  it("rejects non-UUID id with 400 on DELETE /goals/:id", async () => {
+  it("returns 404 for malformed DELETE /goals/:id lookups", async () => {
     const res = await request(buildApp()).delete("/api/goals/undefined");
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid goal id/);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Goal not found/);
   });
 });
 
@@ -117,22 +124,22 @@ describe("approval routes malformed id", () => {
     return app;
   }
 
-  it("rejects non-UUID id with 400 on GET /approvals/:id", async () => {
+  it("returns 404 for malformed GET /approvals/:id lookups", async () => {
     const res = await request(buildApp()).get("/api/approvals/undefined");
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid approval id/);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Approval not found/);
   });
 
-  it("rejects non-UUID id with 400 on GET /approvals/:id/issues", async () => {
+  it("returns 404 for malformed GET /approvals/:id/issues lookups", async () => {
     const res = await request(buildApp()).get("/api/approvals/not-a-uuid/issues");
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid approval id/);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Approval not found/);
   });
 
-  it("rejects non-UUID id with 400 on GET /approvals/:id/comments", async () => {
+  it("returns 404 for malformed GET /approvals/:id/comments lookups", async () => {
     const res = await request(buildApp()).get("/api/approvals/undefined/comments");
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid approval id/);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Approval not found/);
   });
 });
 
@@ -155,24 +162,24 @@ describe("project routes malformed id", () => {
     mockProjectService.update.mockResolvedValue(null);
   });
 
-  it("rejects non-UUID non-shortname id with 400 on GET /projects/:id", async () => {
+  it("returns 404 for malformed GET /projects/:id lookups", async () => {
     const res = await request(buildApp()).get("/api/projects/undefined");
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid project id/);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Project not found/);
   });
 
-  it("rejects non-UUID non-shortname id with 400 on PATCH /projects/:id", async () => {
+  it("returns 404 for malformed PATCH /projects/:id lookups", async () => {
     const res = await request(buildApp())
       .patch("/api/projects/not-a-uuid")
       .send({ name: "test" });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid project id/);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Project not found/);
   });
 
-  it("rejects non-UUID non-shortname id with 400 on DELETE /projects/:id", async () => {
+  it("returns 404 for malformed DELETE /projects/:id lookups", async () => {
     const res = await request(buildApp()).delete("/api/projects/not-a-uuid");
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid project id/);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/Project not found/);
   });
 
   it("converts archivedAt strings back into Date objects before patching projects", async () => {

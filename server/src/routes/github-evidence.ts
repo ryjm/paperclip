@@ -19,6 +19,8 @@ const GITHUB_PR_LINK_RE =
   /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/;
 
 const VERIFY_TIMEOUT_MS = 10_000;
+const BACKEND_GITHUB_TOKEN_HINT =
+  "configure a Paperclip backend GITHUB_TOKEN (server env or project env/secret) for private repo verification";
 
 export interface GitHubRepoRef {
   owner: string;
@@ -68,16 +70,24 @@ type PullRequestVerificationResult = {
   error?: string;
 };
 
-function buildGitHubHeaders() {
+type GitHubAuthContext = {
+  headers: Record<string, string>;
+  hasAuthToken: boolean;
+};
+
+function buildGitHubAuth(authToken?: string | null): GitHubAuthContext {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github.v3+json",
     "User-Agent": "Paperclip-Evidence-Validator",
   };
-  const token = process.env.GITHUB_TOKEN;
+  const token = readNonEmptyString(authToken) ?? readNonEmptyString(process.env.GITHUB_TOKEN);
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
-  return headers;
+  return {
+    headers,
+    hasAuthToken: token != null,
+  };
 }
 
 function normalizeGitHubRepoSegment(value: string) {
@@ -130,16 +140,15 @@ async function fetchGitHub(
 
 async function readRepoMetadata(
   ref: GitHubRepoRef,
-  headers: Record<string, string>,
+  auth: GitHubAuthContext,
   cache: Map<string, GitHubRepoMetadata>,
 ): Promise<GitHubRepoMetadata> {
   const key = cacheKeyForRepo(ref);
   const cached = cache.get(key);
   if (cached) return cached;
 
-  const token = process.env.GITHUB_TOKEN;
   const repoUrl = `https://api.github.com/repos/${ref.owner}/${ref.repo}`;
-  const result = await fetchGitHub(repoUrl, headers);
+  const result = await fetchGitHub(repoUrl, auth.headers);
   if ("networkError" in result) {
     const metadata: GitHubRepoMetadata = {
       accessible: false,
@@ -186,7 +195,7 @@ async function readRepoMetadata(
   }
 
   if (repoResponse.status === 404) {
-    const metadata: GitHubRepoMetadata = token
+    const metadata: GitHubRepoMetadata = auth.hasAuthToken
       ? {
           accessible: false,
           softPass: false,
@@ -197,7 +206,7 @@ async function readRepoMetadata(
           accessible: false,
           softPass: true,
           defaultBranch: null,
-          error: `Cannot verify tracked repo github.com/${ref.owner}/${ref.repo} — set GITHUB_TOKEN for private repo verification`,
+          error: `Cannot verify tracked repo github.com/${ref.owner}/${ref.repo} — ${BACKEND_GITHUB_TOKEN_HINT}`,
         };
     cache.set(key, metadata);
     return metadata;
@@ -230,7 +239,7 @@ async function readRepoMetadata(
 
 async function resolveTrackedBaseRef(
   target: GitHubEvidenceTarget,
-  headers: Record<string, string>,
+  auth: GitHubAuthContext,
   cache: Map<string, GitHubRepoMetadata>,
 ): Promise<{ baseRef: string | null; softPass: boolean; error?: string }> {
   const explicitBaseRef = readNonEmptyString(target.baseRef);
@@ -238,7 +247,7 @@ async function resolveTrackedBaseRef(
     return { baseRef: explicitBaseRef, softPass: false };
   }
 
-  const metadata = await readRepoMetadata(target, headers, cache);
+  const metadata = await readRepoMetadata(target, auth, cache);
   if (metadata.accessible) {
     return {
       baseRef: metadata.defaultBranch,
@@ -341,13 +350,12 @@ export interface VerifyResult {
  */
 async function verifyCommitRef(
   ref: GitHubCommitRef,
-  headers: Record<string, string>,
+  auth: GitHubAuthContext,
   repoCache: Map<string, GitHubRepoMetadata>,
 ): Promise<CommitVerificationResult> {
-  const token = process.env.GITHUB_TOKEN;
   const commitUrl = `https://api.github.com/repos/${ref.owner}/${ref.repo}/commits/${ref.sha}`;
 
-  const result = await fetchGitHub(commitUrl, headers);
+  const result = await fetchGitHub(commitUrl, auth.headers);
   if ("networkError" in result) {
     logger.warn({ ref, error: result.networkError }, "GitHub commit verification network error, soft-passing");
     return { exists: false, softPass: true, error: `Network error verifying commit: ${result.networkError}` };
@@ -368,7 +376,7 @@ async function verifyCommitRef(
 
   if (commitResponse.status === 404) {
     // With auth token, 404 is definitive
-    if (token) {
+    if (auth.hasAuthToken) {
       return {
         exists: false,
         softPass: false,
@@ -377,7 +385,7 @@ async function verifyCommitRef(
     }
 
     // Without auth, 404 could mean private repo — check repo visibility
-    const metadata = await readRepoMetadata(ref, headers, repoCache);
+    const metadata = await readRepoMetadata(ref, auth, repoCache);
     if (metadata.accessible) {
       return {
         exists: false,
@@ -394,7 +402,7 @@ async function verifyCommitRef(
       softPass: true,
       error:
         metadata.error ??
-        `Cannot verify commit on inaccessible repo github.com/${ref.owner}/${ref.repo} — set GITHUB_TOKEN for private repo verification`,
+        `Cannot verify commit on inaccessible repo github.com/${ref.owner}/${ref.repo} — ${BACKEND_GITHUB_TOKEN_HINT}`,
     };
   }
 
@@ -414,13 +422,13 @@ async function verifyCommitRef(
 async function verifyCommitLandedOnBaseRef(
   ref: GitHubCommitRef,
   baseRef: string,
-  headers: Record<string, string>,
+  auth: GitHubAuthContext,
   repoCache: Map<string, GitHubRepoMetadata>,
 ): Promise<CommitLandingResult> {
   const compareUrl =
     `https://api.github.com/repos/${ref.owner}/${ref.repo}/compare/` +
     `${encodeURIComponent(ref.sha)}...${encodeURIComponent(baseRef)}`;
-  const result = await fetchGitHub(compareUrl, headers);
+  const result = await fetchGitHub(compareUrl, auth.headers);
   if ("networkError" in result) {
     logger.warn(
       { ref, baseRef, error: result.networkError },
@@ -473,7 +481,7 @@ async function verifyCommitLandedOnBaseRef(
   }
 
   if (compareResponse.status === 404) {
-    const metadata = await readRepoMetadata(ref, headers, repoCache);
+    const metadata = await readRepoMetadata(ref, auth, repoCache);
     if (!metadata.accessible && metadata.softPass) {
       return {
         landed: false,
@@ -506,11 +514,11 @@ async function verifyCommitLandedOnBaseRef(
 async function verifyPullRequestRef(
   ref: GitHubPullRequestRef,
   trackedBaseRef: string | null,
-  headers: Record<string, string>,
+  auth: GitHubAuthContext,
   repoCache: Map<string, GitHubRepoMetadata>,
 ): Promise<PullRequestVerificationResult> {
   const prUrl = `https://api.github.com/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
-  const result = await fetchGitHub(prUrl, headers);
+  const result = await fetchGitHub(prUrl, auth.headers);
   if ("networkError" in result) {
     logger.warn(
       { ref, error: result.networkError },
@@ -584,7 +592,7 @@ async function verifyPullRequestRef(
   }
 
   if (prResponse.status === 404) {
-    const metadata = await readRepoMetadata(ref, headers, repoCache);
+    const metadata = await readRepoMetadata(ref, auth, repoCache);
     if (!metadata.accessible && metadata.softPass) {
       return {
         merged: false,
@@ -618,9 +626,9 @@ async function verifyPullRequestRef(
  */
 export async function verifyGitHubEvidenceIsRemoteVisible(
   commentBody: string,
-  options?: { trackedTarget?: GitHubEvidenceTarget | null },
+  options?: { trackedTarget?: GitHubEvidenceTarget | null; githubToken?: string | null },
 ): Promise<VerifyResult> {
-  const headers = buildGitHubHeaders();
+  const auth = buildGitHubAuth(options?.githubToken);
   const repoCache = new Map<string, GitHubRepoMetadata>();
   const commitRefs = extractGitHubCommitRefs(commentBody);
   const prRefs = extractGitHubPullRequestRefs(commentBody);
@@ -628,7 +636,7 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
   let trackedBaseRef: string | null = trackedTarget?.baseRef ?? null;
 
   if (trackedTarget) {
-    const baseRefResult = await resolveTrackedBaseRef(trackedTarget, headers, repoCache);
+    const baseRefResult = await resolveTrackedBaseRef(trackedTarget, auth, repoCache);
     if (baseRefResult.baseRef) trackedBaseRef = baseRefResult.baseRef;
     else if (!baseRefResult.softPass && baseRefResult.error) {
       return {
@@ -657,14 +665,14 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
       };
     }
 
-    const result = await verifyCommitRef(ref, headers, repoCache);
+    const result = await verifyCommitRef(ref, auth, repoCache);
     if (!result.exists && result.softPass) {
       unverifiable.push({ ref, reason: result.error ?? "GitHub verification was unavailable" });
     } else if (!result.exists) {
       unreachable.push(ref);
     } else if (result.exists) {
       if (trackedBaseRef) {
-        const landed = await verifyCommitLandedOnBaseRef(ref, trackedBaseRef, headers, repoCache);
+        const landed = await verifyCommitLandedOnBaseRef(ref, trackedBaseRef, auth, repoCache);
         if (!landed.landed && !landed.softPass) {
           return {
             valid: false,
@@ -699,7 +707,7 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
       };
     }
 
-    const result = await verifyPullRequestRef(ref, trackedBaseRef, headers, repoCache);
+    const result = await verifyPullRequestRef(ref, trackedBaseRef, auth, repoCache);
     if (!result.merged && !result.softPass) {
       return {
         valid: false,
@@ -717,7 +725,9 @@ export async function verifyGitHubEvidenceIsRemoteVisible(
     return {
       valid: false,
       softPass: true,
-      error: `Commit evidence could not be verified against GitHub: ${details}. Retry when GitHub API access is healthy, or configure GITHUB_TOKEN for private repositories.`,
+      error:
+        `Commit evidence could not be verified against GitHub: ${details}. ` +
+        `Retry when GitHub API access is healthy, or ${BACKEND_GITHUB_TOKEN_HINT}.`,
     };
   }
 

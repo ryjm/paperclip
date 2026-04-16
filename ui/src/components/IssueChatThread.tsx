@@ -75,6 +75,7 @@ import {
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { timeAgo } from "../lib/timeAgo";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   describeToolInput,
   displayToolName,
@@ -438,11 +439,6 @@ function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | 
     return assigneeUserId ? { assigneeAgentId: null, assigneeUserId } : null;
   }
   return null;
-}
-
-function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
-  const isClosed = issueStatus === "done" || issueStatus === "cancelled";
-  return isClosed && assigneeValue.startsWith("agent:");
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1620,6 +1616,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  const [reopenRequested, setReopenRequested] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
@@ -1667,6 +1664,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
 
+  const canReopenIssue = issueStatus === "done" || issueStatus === "cancelled";
+
+  useEffect(() => {
+    if (!canReopenIssue && reopenRequested) {
+      setReopenRequested(false);
+    }
+  }, [canReopenIssue, reopenRequested]);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: focusComposer,
     restoreDraft: (submittedBody: string) => {
@@ -1686,10 +1691,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : undefined;
-    const reopen = shouldImplicitlyReopenComment(
-      issueStatus,
-      hasReassignment ? reassignTarget : currentAssigneeValue,
-    ) ? true : undefined;
+    const reopen = reopenRequested ? true : undefined;
     const submittedBody = trimmed;
     const viewportSnapshot = captureComposerViewportSnapshot(composerContainerRef.current);
 
@@ -1712,6 +1714,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       await appendPromise;
       if (draftKey) clearDraft(draftKey);
       setReassignTarget(effectiveSuggestedAssigneeValue);
+      setReopenRequested(false);
     } catch {
       setBody((current) =>
         restoreSubmittedCommentDraft({
@@ -1792,6 +1795,17 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               <Paperclip className="h-4 w-4" />
             </Button>
           </div>
+        ) : null}
+
+        {canReopenIssue ? (
+          <label className="flex items-center gap-2 rounded-md border border-border/70 bg-background/70 px-2 py-1 text-xs text-muted-foreground">
+            <Checkbox
+              checked={reopenRequested}
+              onCheckedChange={(checked) => setReopenRequested(checked === true)}
+              aria-label="Re-open issue"
+            />
+            <span>Re-open issue</span>
+          </label>
         ) : null}
 
         {enableReassign && reassignOptions.length > 0 ? (

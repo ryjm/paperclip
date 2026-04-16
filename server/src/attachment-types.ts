@@ -21,6 +21,8 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "image/jpg",
   "image/webp",
   "image/gif",
+  "application/zip",
+  "application/x-zip-compressed",
   "application/pdf",
   "text/markdown",
   "text/plain",

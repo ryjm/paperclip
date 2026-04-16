@@ -9,6 +9,7 @@ import type {
   IssueComment,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
@@ -132,11 +133,6 @@ function parseReassignment(target: string): CommentReassignment | null {
     return assigneeUserId ? { assigneeAgentId: null, assigneeUserId } : null;
   }
   return null;
-}
-
-function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
-  const isClosed = issueStatus === "done" || issueStatus === "cancelled";
-  return isClosed && assigneeValue.startsWith("agent:");
 }
 
 function humanizeValue(value: string | null): string {
@@ -671,6 +667,7 @@ export function CommentThread({
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  const [reopenRequested, setReopenRequested] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
@@ -766,6 +763,14 @@ export function CommentThread({
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
 
+  const canReopenIssue = issueStatus === "done" || issueStatus === "cancelled";
+
+  useEffect(() => {
+    if (!canReopenIssue && reopenRequested) {
+      setReopenRequested(false);
+    }
+  }, [canReopenIssue, reopenRequested]);
+
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
     const hash = location.hash;
@@ -789,10 +794,7 @@ export function CommentThread({
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
-    const reopen = shouldImplicitlyReopenComment(
-      issueStatus,
-      hasReassignment ? reassignTarget : currentAssigneeValue,
-    ) ? true : undefined;
+    const reopen = reopenRequested ? true : undefined;
     const submittedBody = trimmed;
 
     setSubmitting(true);
@@ -801,6 +803,7 @@ export function CommentThread({
       await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
       setReassignTarget(effectiveSuggestedAssigneeValue);
+      setReopenRequested(false);
     } catch {
       setBody((current) =>
         restoreSubmittedCommentDraft({
@@ -942,6 +945,16 @@ export function CommentThread({
                   <Paperclip className="h-4 w-4" />
                 </Button>
               </div>
+            )}
+            {canReopenIssue && (
+              <label className="flex items-center gap-2 rounded-md border border-border/70 bg-background/70 px-2 py-1 text-xs text-muted-foreground">
+                <Checkbox
+                  checked={reopenRequested}
+                  onCheckedChange={(checked) => setReopenRequested(checked === true)}
+                  aria-label="Re-open issue"
+                />
+                <span>Re-open issue</span>
+              </label>
             )}
             {enableReassign && reassignOptions.length > 0 && (
               <InlineEntitySelector

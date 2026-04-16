@@ -3989,6 +3989,7 @@ export function heartbeatService(db: Db) {
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    let harnessPreviousIssueStatus: string | null = null;
     if (
       issueId &&
       issueContext &&
@@ -3999,9 +4000,11 @@ export function heartbeatService(db: Db) {
         agentId: agent.id,
       })
     ) {
+      harnessPreviousIssueStatus = issueContext.status;
       try {
         await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
+        context.paperclipHarnessPreviousIssueStatus = harnessPreviousIssueStatus;
       } catch (error) {
         if (!isCheckoutConflictError(error)) throw error;
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
@@ -4181,7 +4184,10 @@ export function heartbeatService(db: Db) {
           recorder: workspaceOperationRecorder,
         });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
-    const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
+    const resolvedProjectWorkspaceId =
+      resolvedProjectId && resolvedProjectId !== issueRef?.projectId
+        ? resolvedWorkspace.workspaceId ?? issueRef?.projectWorkspaceId ?? null
+        : issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
     const nextExecutionWorkspaceMetadataBase = {
       ...(existingExecutionWorkspace?.metadata ?? {}),
@@ -4797,6 +4803,25 @@ export function heartbeatService(db: Db) {
         error: adapterResult.errorMessage ?? null,
       });
 
+      if (
+        wakeCooldown &&
+        issueId &&
+        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true &&
+        harnessPreviousIssueStatus &&
+        harnessPreviousIssueStatus !== "in_progress"
+      ) {
+        try {
+          await issuesSvc.update(issueId, {
+            status: harnessPreviousIssueStatus,
+          });
+        } catch (err) {
+          await onLog(
+            "stderr",
+            `[paperclip] Failed to restore harness checkout state after quota cooldown: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+      }
+
       const finalizedRun = await getRun(run.id);
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
@@ -5054,48 +5079,19 @@ export function heartbeatService(db: Db) {
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const shouldReopenDeferredCommentWake =
+        const closedIssueCommentWake =
           deferredCommentIds.length > 0 && (issue.status === "done" || issue.status === "cancelled");
-        let reopenedActivity: LogActivityInput | null = null;
-
-        if (shouldReopenDeferredCommentWake) {
-          const reopenedFromStatus = issue.status;
-          const reopenedIssue = await issuesSvc.update(
-            issue.id,
-            {
-              status: "todo",
-              executionState: null,
-            },
-            tx,
-          );
-          if (reopenedIssue) {
-            issue = {
-              ...issue,
-              identifier: reopenedIssue.identifier,
-              status: reopenedIssue.status,
-              executionRunId: reopenedIssue.executionRunId,
-            };
-            if (!readNonEmptyString(promotedContextSeed.reopenedFrom)) {
-              promotedContextSeed.reopenedFrom = reopenedFromStatus;
-            }
-            reopenedActivity = {
-              companyId: issue.companyId,
-              actorType: "system",
-              actorId: "heartbeat",
-              agentId: deferred.agentId,
-              runId: run.id,
-              action: "issue.updated",
-              entityType: "issue",
-              entityId: issue.id,
-              details: {
-                status: "todo",
-                reopened: true,
-                reopenedFrom: reopenedFromStatus,
-                source: "deferred_comment_wake",
-                identifier: issue.identifier,
-              },
-            };
-          }
+        if (closedIssueCommentWake) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Deferred comment wake skipped because the issue is already closed; explicit reopen required",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
         }
 
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
@@ -5161,17 +5157,12 @@ export function heartbeatService(db: Db) {
 
         return {
           run: newRun,
-          reopenedActivity,
         };
       }
     });
 
     const promotedRun = promotionResult?.run ?? null;
     if (!promotedRun) return;
-
-    if (promotionResult?.reopenedActivity) {
-      await logActivity(db, promotionResult.reopenedActivity);
-    }
 
     publishLiveEvent({
       companyId: promotedRun.companyId,

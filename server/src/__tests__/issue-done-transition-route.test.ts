@@ -14,6 +14,8 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { createStorageService } from "../storage/service.js";
 
 describe("issue done transition route", () => {
+  type ProjectEnvConfig = typeof projects.$inferInsert.env;
+
   let databaseDir = "";
   let storageDir = "";
   let databaseUrl = "";
@@ -81,11 +83,18 @@ describe("issue done transition route", () => {
   }, 120000);
 
   afterAll(async () => {
+    // Issue update routes enqueue wakeups in a detached async block; give the
+    // final queued queries a moment to settle before closing embedded Postgres.
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await db.$client.end({ timeout: 0 });
     await embeddedPostgres.stop();
     await rm(databaseDir, { recursive: true, force: true });
     await rm(storageDir, { recursive: true, force: true });
   }, 120000);
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
 
   async function createCodeIssue() {
     return issueService(db).create(companyId, {
@@ -105,17 +114,23 @@ describe("issue done transition route", () => {
     });
   }
 
-  async function createTrackedRepoCodeIssue() {
+  async function createTrackedRepoCodeIssue(input?: {
+    projectEnv?: ProjectEnvConfig;
+    repoUrl?: string;
+    repoRef?: string | null;
+    defaultRef?: string | null;
+  }) {
     const projects = projectService(db);
     const project = await projects.create(companyId, {
       name: `Tracked repo project ${randomUUID()}`,
       status: "in_progress",
+      env: input?.projectEnv ?? null,
     });
     const workspace = await projects.createWorkspace(project.id, {
       name: "Primary",
-      repoUrl: "https://github.com/acme/paperclip.git",
-      repoRef: "main",
-      defaultRef: "main",
+      repoUrl: input?.repoUrl ?? "https://github.com/acme/paperclip.git",
+      repoRef: input?.repoRef ?? "main",
+      defaultRef: input?.defaultRef ?? input?.repoRef ?? "main",
       isPrimary: true,
     });
     return issueService(db).create(companyId, {
@@ -264,13 +279,19 @@ describe("issue done transition route", () => {
       "Shipped in https://github.com/acme/paperclip/commit/abc1234",
       { userId: "local-board" },
     );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
 
-    const res = await request(app)
-      .patch(`/api/issues/${issue.id}`)
-      .send({ status: "done" });
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({ status: "done" });
 
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("done");
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("done");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("rejects done when PR evidence is open (not merged)", async () => {
@@ -430,6 +451,93 @@ describe("issue done transition route", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.status).toBe("done");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("uses project env GITHUB_TOKEN for private repo commit verification", async () => {
+    const issue = await createTrackedRepoCodeIssue({
+      projectEnv: {
+        GITHUB_TOKEN: {
+          type: "plain",
+          value: "ghp_project_token_123",
+        },
+      },
+      repoUrl: "https://github.com/acme/private-repo.git",
+    });
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "behind" }),
+      });
+    globalThis.fetch = fetchMock;
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "Done in https://github.com/acme/private-repo/commit/deadbeef1234567",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("done");
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1,
+        "https://api.github.com/repos/acme/private-repo/commits/deadbeef1234567",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer ghp_project_token_123",
+          }),
+        }),
+      );
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2,
+        "https://api.github.com/repos/acme/private-repo/compare/deadbeef1234567...main",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer ghp_project_token_123",
+          }),
+        }),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("explains backend verifier auth when private repo verification is unavailable", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "");
+    const issue = await createTrackedRepoCodeIssue({
+      repoUrl: "https://github.com/acme/private-repo.git",
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: false, status: 404 });
+
+    try {
+      const res = await request(app)
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "done",
+          comment: "Done in https://github.com/acme/private-repo/commit/deadbeef1234567",
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("backend GitHub verifier");
+      expect(res.body.error).toContain("agent shell");
+      expect(res.body.details.remoteVerification).toMatchObject({
+        result: "verification_unavailable",
+      });
+      expect(res.body.details.remoteVerification.verifierContext).toContain("backend GitHub verifier");
+      expect(res.body.details.remoteVerification.fix).toContain("project env/secret");
+      expect(res.body.details.remoteVerification.fix).toContain("gh");
     } finally {
       globalThis.fetch = originalFetch;
     }

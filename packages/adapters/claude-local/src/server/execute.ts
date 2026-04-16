@@ -27,6 +27,7 @@ import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  detectClaudeQuotaCooldown,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -102,8 +103,14 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "") || null;
   const workspaceRepoRef = asString(workspaceContext.repoRef, "") || null;
   const workspaceBranch = asString(workspaceContext.branchName, "") || null;
+  const workspaceObservedBranch = asString(workspaceContext.observedBranchName, "") || null;
+  const workspaceObservedHead = asString(workspaceContext.observedHeadSha, "") || null;
   const workspaceWorktreePath = asString(workspaceContext.worktreePath, "") || null;
-  const agentHome = asString(workspaceContext.agentHome, "") || null;
+  const configuredInstructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  const inferredAgentHome = configuredInstructionsFilePath
+    ? path.dirname(path.resolve(workspaceCwd || asString(config.cwd, "") || process.cwd(), configuredInstructionsFilePath))
+    : null;
+  const agentHome = asString(workspaceContext.agentHome, "") || inferredAgentHome;
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
         (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
@@ -121,9 +128,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     : [];
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const cwd = workspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
@@ -178,8 +183,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
-  if (effectiveWorkspaceCwd) {
-    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
+  if (workspaceCwd) {
+    env.PAPERCLIP_WORKSPACE_CWD = workspaceCwd;
   }
   if (workspaceSource) {
     env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
@@ -198,6 +203,12 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (workspaceBranch) {
     env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
+  }
+  if (workspaceObservedBranch) {
+    env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH = workspaceObservedBranch;
+  }
+  if (workspaceObservedHead) {
+    env.PAPERCLIP_WORKSPACE_OBSERVED_HEAD = workspaceObservedHead;
   }
   if (workspaceWorktreePath) {
     env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
@@ -523,10 +534,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: proc.stdout,
       stderr: proc.stderr,
     });
+    const wakeCooldown = detectClaudeQuotaCooldown({
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+    });
     const errorMeta =
-      loginMeta.loginUrl != null
+      loginMeta.loginUrl != null || wakeCooldown
         ? {
-            loginUrl: loginMeta.loginUrl,
+            ...(loginMeta.loginUrl != null ? { loginUrl: loginMeta.loginUrl } : {}),
+            ...(wakeCooldown ? { wakeCooldown } : {}),
           }
         : undefined;
 
@@ -548,7 +565,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorCode: loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : wakeCooldown?.errorCode ?? null,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
@@ -592,7 +611,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: loginMeta.requiresLogin
+        ? "claude_auth_required"
+        : wakeCooldown?.errorCode ?? null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,

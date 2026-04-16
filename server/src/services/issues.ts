@@ -31,6 +31,7 @@ import {
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
+import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -694,7 +695,8 @@ export function issueService(db: Db) {
       .where(eq(issues.id, id))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const [enriched] = await withIssueMetadata(db, [row], getIssueRelationSummaryMap);
+    const [reconciled] = await reconcileStaleExecutionLocks(db, [row]);
+    const [enriched] = await withIssueMetadata(db, [reconciled], getIssueRelationSummaryMap);
     return enriched;
   }
 
@@ -705,7 +707,8 @@ export function issueService(db: Db) {
       .where(eq(issues.identifier, identifier.toUpperCase()))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const [enriched] = await withIssueMetadata(db, [row], getIssueRelationSummaryMap);
+    const [reconciled] = await reconcileStaleExecutionLocks(db, [row]);
+    const [enriched] = await withIssueMetadata(db, [reconciled], getIssueRelationSummaryMap);
     return enriched;
   }
 
@@ -1162,7 +1165,8 @@ export function issueService(db: Db) {
           desc(issues.updatedAt),
         );
       const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
-      const withLabels = await withIssueLabels(db, rows);
+      const reconciledRows = await reconcileStaleExecutionLocks(db, rows);
+      const withLabels = await withIssueLabels(db, reconciledRows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
@@ -1534,6 +1538,9 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      if (issueData.executionPolicy !== undefined) {
+        issueData.executionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy);
+      }
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
@@ -1711,6 +1718,9 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      if (issueData.executionPolicy !== undefined) {
+        issueData.executionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy);
+      }
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;

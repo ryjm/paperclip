@@ -32,8 +32,22 @@ vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
+  feedbackService: () => ({
+    listIssueVotesForUser: vi.fn(async () => []),
+    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+  }),
   goalService: () => ({}),
   heartbeatService: () => mockHeartbeatService,
+  instanceSettingsService: () => ({
+    get: vi.fn(async () => ({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    })),
+    listCompanyIds: vi.fn(async () => ["company-1"]),
+  }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
@@ -81,7 +95,7 @@ describe("issue update wakeups", () => {
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
   });
 
-  it("wakes the assignee when an assigned issue is rerouted back to todo without changing owner", async () => {
+  it("does not wake the assignee when an in-progress issue is rerouted back to todo without changing owner", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
     mockIssueService.update.mockResolvedValue(makeIssue("todo"));
 
@@ -90,23 +104,7 @@ describe("issue update wakeups", () => {
       .send({ status: "todo" });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        source: "automation",
-        triggerDetail: "system",
-        reason: "issue_status_changed",
-        payload: {
-          issueId: "11111111-1111-4111-8111-111111111111",
-          mutation: "update",
-        },
-        contextSnapshot: {
-          issueId: "11111111-1111-4111-8111-111111111111",
-          source: "issue.status_change",
-        },
-      }),
-    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("does not wake the assignee when the status stays blocked", async () => {

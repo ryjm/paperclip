@@ -178,7 +178,7 @@ describe("CommentThread", () => {
     });
   });
 
-  it("hides the reopen control and infers reopen for closed agent-assigned issues", async () => {
+  it("renders an explicit reopen control for closed issues", async () => {
     const root = createRoot(container);
     const onAdd = vi.fn(async () => {});
 
@@ -195,13 +195,14 @@ describe("CommentThread", () => {
       );
     });
 
-    expect(container.textContent).not.toContain("Re-open");
-
+    expect(container.textContent).toContain("Re-open issue");
     const editor = container.querySelector('textarea[aria-label="Comment editor"]') as HTMLTextAreaElement | null;
+    const reopenToggle = container.querySelector('[aria-label="Re-open issue"]') as HTMLElement | null;
     const submitButton = Array.from(container.querySelectorAll("button")).find(
       (element) => element.textContent === "Comment",
     ) as HTMLButtonElement | undefined;
     expect(editor).not.toBeNull();
+    expect(reopenToggle).not.toBeNull();
     expect(submitButton).toBeDefined();
 
     act(() => {
@@ -217,7 +218,26 @@ describe("CommentThread", () => {
       submitButton?.click();
     });
 
-    expect(onAdd).toHaveBeenCalledWith("Please pick this back up", true, undefined);
+    expect(onAdd).toHaveBeenNthCalledWith(1, "Please pick this back up", undefined, undefined);
+
+    act(() => {
+      reopenToggle?.click();
+    });
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Please pick this back up again");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(onAdd).toHaveBeenNthCalledWith(2, "Please pick this back up again", true, undefined);
 
     act(() => {
       root.unmount();

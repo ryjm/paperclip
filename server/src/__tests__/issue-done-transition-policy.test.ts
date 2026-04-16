@@ -213,11 +213,13 @@ describe("buildDoneEvidenceVerificationUnavailableErrorResponse", () => {
     const payload = buildDoneEvidenceVerificationUnavailableErrorResponse(
       "GitHub API returned 503",
     );
-    expect(payload.error).toContain("could not be verified against GitHub");
+    expect(payload.error).toContain("backend GitHub verifier");
     expect(payload.details.remoteVerification).toMatchObject({
       result: "verification_unavailable",
       detail: "GitHub API returned 503",
     });
+    expect(payload.details.remoteVerification.verifierContext).toContain("agent shell");
+    expect(payload.details.remoteVerification.fix).toContain("project env/secret");
     expect(payload.details.requiredLabel).toBe("code");
   });
 });

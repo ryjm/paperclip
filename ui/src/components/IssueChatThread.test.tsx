@@ -366,7 +366,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("hides the reopen control and infers reopen for closed agent-assigned issue replies", async () => {
+  it("renders an explicit reopen control for closed issue replies", async () => {
     const root = createRoot(container);
 
     act(() => {
@@ -386,13 +386,14 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).not.toContain("Re-open");
-
+    expect(container.textContent).toContain("Re-open issue");
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    const reopenToggle = container.querySelector('[aria-label="Re-open issue"]') as HTMLElement | null;
     const submitButton = Array.from(container.querySelectorAll("button")).find(
       (element) => element.textContent === "Send",
     ) as HTMLButtonElement | undefined;
     expect(editor).not.toBeNull();
+    expect(reopenToggle).not.toBeNull();
     expect(submitButton).toBeDefined();
 
     act(() => {
@@ -408,9 +409,37 @@ describe("IssueChatThread", () => {
       submitButton?.click();
     });
 
-    expect(appendMock).toHaveBeenCalledWith(
+    expect(appendMock).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({
         content: [{ type: "text", text: "Please pick this back up" }],
+        runConfig: {
+          custom: {},
+        },
+      }),
+    );
+
+    act(() => {
+      reopenToggle?.click();
+    });
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Please pick this back up again");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(appendMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        content: [{ type: "text", text: "Please pick this back up again" }],
         runConfig: {
           custom: {
             reopen: true,

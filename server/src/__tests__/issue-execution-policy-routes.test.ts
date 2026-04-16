@@ -135,8 +135,6 @@ describe("issue execution policy routes", () => {
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.objectContaining({
         executionPolicy: policy,
-        actorAgentId: null,
-        actorUserId: "local-board",
       }),
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
