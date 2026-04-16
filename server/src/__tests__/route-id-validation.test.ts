@@ -134,6 +134,26 @@ describe("approval routes malformed id", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Invalid approval id/);
   });
+
+  it("rejects non-UUID id with 400 on POST /approvals/:id/approve", async () => {
+    const res = await request(buildApp()).post("/api/approvals/not-a-uuid/approve").send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid approval id/);
+  });
+
+  it("rejects non-UUID id with 400 on POST /approvals/:id/reject", async () => {
+    const res = await request(buildApp()).post("/api/approvals/not-a-uuid/reject").send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid approval id/);
+  });
+
+  it("rejects non-UUID id with 400 on POST /approvals/:id/request-revision", async () => {
+    const res = await request(buildApp())
+      .post("/api/approvals/not-a-uuid/request-revision")
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid approval id/);
+  });
 });
 
 describe("project routes malformed id", () => {
