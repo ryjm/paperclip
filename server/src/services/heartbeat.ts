@@ -2736,6 +2736,66 @@ export function heartbeatService(db: Db) {
     }
   }
 
+  async function reconcileAgentStatus(agentId: string) {
+    const existing = await getAgent(agentId);
+    if (!existing) return null;
+
+    if (
+      existing.status === "paused" ||
+      existing.status === "terminated" ||
+      existing.status === "pending_approval"
+    ) {
+      return existing;
+    }
+
+    const runningCount = await countRunningRunsForAgent(agentId);
+    let nextStatus = existing.status;
+    let outcome: "reconciled_running" | "reconciled_idle" | "reconciled_error" | null = null;
+
+    if (runningCount > 0) {
+      nextStatus = "running";
+      outcome = "reconciled_running";
+    } else if (existing.status === "running") {
+      const [latestRun] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1);
+      nextStatus = latestRun?.status === "failed" || latestRun?.status === "timed_out" ? "error" : "idle";
+      outcome = nextStatus === "error" ? "reconciled_error" : "reconciled_idle";
+    }
+
+    if (nextStatus === existing.status) return existing;
+
+    const updated = await db
+      .update(agents)
+      .set({
+        status: nextStatus,
+        updatedAt: new Date(),
+      })
+      .where(eq(agents.id, agentId))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (updated && outcome) {
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: updated.id,
+          status: updated.status,
+          lastHeartbeatAt: updated.lastHeartbeatAt
+            ? new Date(updated.lastHeartbeatAt).toISOString()
+            : null,
+          outcome,
+        },
+      });
+    }
+
+    return updated ?? existing;
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -5364,6 +5424,8 @@ export function heartbeatService(db: Db) {
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
 
     cancelBudgetScopeWork,
+
+    reconcileAgentStatus,
 
     getRunIssueSummary: async (runId: string) => {
       const [run] = await db

@@ -1594,6 +1594,16 @@ export function issueRoutes(
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
+    if (req.body.status !== undefined || assigneeWillChange) {
+      const agentIdsToReconcile = [...new Set(
+        [existing.assigneeAgentId, issue.assigneeAgentId].filter((value): value is string => typeof value === "string" && value.length > 0),
+      )];
+      for (const agentId of agentIdsToReconcile) {
+        await heartbeat.reconcileAgentStatus?.(agentId).catch((err) =>
+          logger.warn({ err, issueId: issue.id, agentId }, "failed to reconcile agent status after issue update"));
+      }
+    }
+
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
