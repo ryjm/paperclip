@@ -862,16 +862,26 @@ export function buildPersistentSkillSnapshot(
   };
 }
 
-function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSkillEntry[] {
+async function isConfiguredPaperclipRuntimeSkillSourceAvailable(source: string): Promise<boolean> {
+  const sourceDir = path.resolve(source);
+  const [dirStat, skillFileStat] = await Promise.all([
+    fs.stat(sourceDir).catch(() => null),
+    fs.stat(path.join(sourceDir, "SKILL.md")).catch(() => null),
+  ]);
+  return Boolean(dirStat?.isDirectory() && skillFileStat?.isFile());
+}
+
+async function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): Promise<PaperclipSkillEntry[]> {
   if (!Array.isArray(value)) return [];
-  const out: PaperclipSkillEntry[] = [];
+  const deduped = new Map<string, PaperclipSkillEntry>();
   for (const rawEntry of value) {
     const entry = parseObject(rawEntry);
     const key = asString(entry.key, asString(entry.name, "")).trim();
     const runtimeName = asString(entry.runtimeName, asString(entry.name, "")).trim();
     const source = asString(entry.source, "").trim();
     if (!key || !runtimeName || !source) continue;
-    out.push({
+    if (!(await isConfiguredPaperclipRuntimeSkillSourceAvailable(source))) continue;
+    deduped.set(key, {
       key,
       runtimeName,
       source,
@@ -882,7 +892,7 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
           : null,
     });
   }
-  return out;
+  return Array.from(deduped.values());
 }
 
 export async function readPaperclipRuntimeSkillEntries(
@@ -890,7 +900,7 @@ export async function readPaperclipRuntimeSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
 ): Promise<PaperclipSkillEntry[]> {
-  const configuredEntries = normalizeConfiguredPaperclipRuntimeSkills(config.paperclipRuntimeSkills);
+  const configuredEntries = await normalizeConfiguredPaperclipRuntimeSkills(config.paperclipRuntimeSkills);
   if (configuredEntries.length > 0) return configuredEntries;
   return listPaperclipSkillEntries(moduleDir, additionalCandidates);
 }
