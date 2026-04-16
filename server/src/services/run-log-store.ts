@@ -154,3 +154,6 @@ export function getRunLogStore() {
   return cachedStore;
 }
 
+export function resetRunLogStoreForTests() {
+  cachedStore = null;
+}

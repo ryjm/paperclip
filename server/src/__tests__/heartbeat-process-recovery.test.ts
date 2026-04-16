@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -20,6 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { runningProcesses } from "../adapters/index.ts";
+import { getRunLogStore, resetRunLogStoreForTests } from "../services/run-log-store.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 
@@ -147,10 +151,16 @@ async function spawnOrphanedProcessGroup() {
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousRunLogBasePath: string | undefined;
+  let runLogBasePath: string | null = null;
   const childProcesses = new Set<ChildProcess>();
   const cleanupPids = new Set<number>();
 
   beforeAll(async () => {
+    previousRunLogBasePath = process.env.RUN_LOG_BASE_PATH;
+    runLogBasePath = await mkdtemp(path.join(tmpdir(), "paperclip-heartbeat-run-logs-"));
+    process.env.RUN_LOG_BASE_PATH = runLogBasePath;
+    resetRunLogStoreForTests();
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -214,6 +224,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     cleanupPids.clear();
     runningProcesses.clear();
     await tempDb?.cleanup();
+    resetRunLogStoreForTests();
+    if (runLogBasePath) {
+      await rm(runLogBasePath, { recursive: true, force: true });
+    }
+    if (previousRunLogBasePath === undefined) {
+      delete process.env.RUN_LOG_BASE_PATH;
+    } else {
+      process.env.RUN_LOG_BASE_PATH = previousRunLogBasePath;
+    }
+    resetRunLogStoreForTests();
   });
 
   async function seedRunFixture(input?: {
@@ -392,6 +412,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  async function appendRunLogChunks(
+    input: {
+      companyId: string;
+      agentId: string;
+      runId: string;
+      chunks: string[];
+      ts?: string;
+    },
+  ) {
+    const runLogStore = getRunLogStore();
+    const handle = await runLogStore.begin({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      runId: input.runId,
+    });
+
+    for (const chunk of input.chunks) {
+      await runLogStore.append(handle, {
+        stream: "stdout",
+        chunk,
+        ts: input.ts ?? "2026-03-19T00:02:00.000Z",
+      });
+    }
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        logStore: handle.store,
+        logRef: handle.logRef,
+      })
+      .where(eq(heartbeatRuns.id, input.runId));
+  }
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -417,6 +470,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("finalizes a detached local run when the persisted log already contains a terminal result", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+    const terminalResult = JSON.stringify({
+      type: "result",
+      subtype: "error_max_turns",
+      is_error: true,
+      result: "Max turns reached",
+    });
+
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+    });
+    await appendRunLogChunks({
+      companyId,
+      agentId,
+      runId,
+      chunks: [
+        `${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } })}\n`,
+        terminalResult.slice(0, 42),
+        `${terminalResult.slice(42)}\n`,
+      ],
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId, { unsafeFullResultJson: true });
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("error_max_turns");
+    expect(run?.error).toContain("persisted run log");
+    expect(run?.resultJson).toMatchObject({
+      type: "result",
+      subtype: "error_max_turns",
+      is_error: true,
+      result: "Max turns reached",
+      summary: "Max turns reached",
+    });
+    expect(run?.finishedAt).toEqual(new Date("2026-03-19T00:02:00.000Z"));
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
   });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {
