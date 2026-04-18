@@ -1979,7 +1979,7 @@ export function issueService(db: Db) {
         return enriched;
       }
 
-      const current = await db
+      let current = await db
         .select({
           id: issues.id,
           status: issues.status,
@@ -2185,6 +2185,8 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
