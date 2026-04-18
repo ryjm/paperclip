@@ -493,6 +493,69 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 
+type ExecutionLockRow = {
+  id: string;
+  executionRunId: string | null;
+  executionLockedAt: Date | null;
+};
+
+export async function reconcileStaleExecutionLocks<T extends ExecutionLockRow>(
+  dbOrTx: any,
+  issueRows: T[],
+): Promise<T[]> {
+  const executionRunIds = [...new Set(
+    issueRows
+      .map((row) => row.executionRunId)
+      .filter((id): id is string => id != null),
+  )];
+  if (executionRunIds.length === 0) return issueRows;
+
+  const rows: Array<{ id: string; status: string }> = await dbOrTx
+    .select({
+      id: heartbeatRuns.id,
+      status: heartbeatRuns.status,
+    })
+    .from(heartbeatRuns)
+    .where(inArray(heartbeatRuns.id, executionRunIds));
+  const activeRunIds = new Set(
+    rows
+      .filter((row) => ACTIVE_RUN_STATUSES.includes(row.status))
+      .map((row) => row.id),
+  );
+
+  const staleRows = issueRows.filter((row) => row.executionRunId && !activeRunIds.has(row.executionRunId));
+  if (staleRows.length === 0) return issueRows;
+
+  const clearedByIssueId = new Map<string, T>();
+  for (const row of staleRows) {
+    const executionRunId = row.executionRunId;
+    if (!executionRunId) continue;
+    const cleared = await dbOrTx
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionLockedAt: null,
+      })
+      .where(and(eq(issues.id, row.id), eq(issues.executionRunId, executionRunId)))
+      .returning()
+      .then((updatedRows: T[]) => updatedRows[0] ?? null);
+    if (cleared) {
+      clearedByIssueId.set(row.id, cleared as T);
+      continue;
+    }
+    const current = await dbOrTx
+      .select()
+      .from(issues)
+      .where(eq(issues.id, row.id))
+      .then((updatedRows: T[]) => updatedRows[0] ?? null);
+    if (current) {
+      clearedByIssueId.set(row.id, current);
+    }
+  }
+
+  return issueRows.map((row) => clearedByIssueId.get(row.id) ?? row);
+}
+
 async function activeRunMapForIssues(
   dbOrTx: any,
   issueRows: IssueWithLabels[],
@@ -593,7 +656,8 @@ export function issueService(db: Db) {
       .where(eq(issues.id, id))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const [enriched] = await withIssueLabels(db, [row]);
+    const [reconciled] = await reconcileStaleExecutionLocks(db, [row]);
+    const [enriched] = await withIssueLabels(db, [reconciled]);
     return enriched;
   }
 
@@ -604,7 +668,8 @@ export function issueService(db: Db) {
       .where(eq(issues.identifier, identifier.toUpperCase()))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const [enriched] = await withIssueLabels(db, [row]);
+    const [reconciled] = await reconcileStaleExecutionLocks(db, [row]);
+    const [enriched] = await withIssueLabels(db, [reconciled]);
     return enriched;
   }
 
@@ -944,16 +1009,73 @@ export function issueService(db: Db) {
           eq(issues.checkoutRunId, input.expectedCheckoutRunId),
         ),
       )
-      .returning({
-        id: issues.id,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
+      .returning()
       .then((rows) => rows[0] ?? null);
 
     return adopted;
+  }
+
+  function matchExecutionRunCondition(expectedExecutionRunId: string | null) {
+    return expectedExecutionRunId == null
+      ? isNull(issues.executionRunId)
+      : eq(issues.executionRunId, expectedExecutionRunId);
+  }
+
+  async function canSameAgentAdoptMissingCheckoutRun(input: {
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    executionRunId: string | null;
+  }) {
+    if (!input.executionRunId || input.executionRunId === input.actorRunId) return true;
+
+    const executionRun = await db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, input.executionRunId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!executionRun) return true;
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return true;
+
+    return (
+      executionRun.status === "queued" &&
+      executionRun.agentId === input.actorAgentId &&
+      executionRun.contextIssueId === input.issueId
+    );
+  }
+
+  async function adoptMissingCheckoutRun(input: {
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    expectedExecutionRunId: string | null;
+  }) {
+    const now = new Date();
+    return db
+      .update(issues)
+      .set({
+        checkoutRunId: input.actorRunId,
+        executionRunId: input.actorRunId,
+        executionLockedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.id, input.issueId),
+          eq(issues.status, "in_progress"),
+          eq(issues.assigneeAgentId, input.actorAgentId),
+          isNull(issues.checkoutRunId),
+          matchExecutionRunCondition(input.expectedExecutionRunId),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
   }
 
   return {
@@ -1061,7 +1183,8 @@ export function issueService(db: Db) {
           desc(issues.updatedAt),
         );
       const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
-      const withLabels = await withIssueLabels(db, rows);
+      const reconciledRows = await reconcileStaleExecutionLocks(db, rows);
+      const withLabels = await withIssueLabels(db, reconciledRows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
@@ -1874,28 +1997,36 @@ export function issueService(db: Db) {
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
         current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
-        checkoutRunId
+        checkoutRunId &&
+        (await canSameAgentAdoptMissingCheckoutRun({
+          issueId: id,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+          executionRunId: current.executionRunId,
+        }))
       ) {
-        const adopted = await db
-          .update(issues)
-          .set({
-            checkoutRunId,
-            executionRunId: checkoutRunId,
-            updatedAt: new Date(),
+        const adopted = await adoptMissingCheckoutRun({
+          issueId: id,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+          expectedExecutionRunId: current.executionRunId,
+        });
+        if (adopted) {
+          const [enriched] = await withIssueLabels(db, [adopted]);
+          return enriched;
+        }
+        current = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
           })
-          .where(
-            and(
-              eq(issues.id, id),
-              eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
-            ),
-          )
-          .returning()
+          .from(issues)
+          .where(eq(issues.id, id))
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (!current) throw notFound("Issue not found");
       }
 
       if (
@@ -1947,6 +2078,7 @@ export function issueService(db: Db) {
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -1960,6 +2092,33 @@ export function issueService(db: Db) {
         sameRunLock(current.checkoutRunId, actorRunId)
       ) {
         return { ...current, adoptedFromRunId: null as string | null };
+      }
+
+      if (
+        actorRunId &&
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        current.checkoutRunId == null &&
+        (await canSameAgentAdoptMissingCheckoutRun({
+          issueId: id,
+          actorAgentId,
+          actorRunId,
+          executionRunId: current.executionRunId,
+        }))
+      ) {
+        const adopted = await adoptMissingCheckoutRun({
+          issueId: id,
+          actorAgentId,
+          actorRunId,
+          expectedExecutionRunId: current.executionRunId,
+        });
+
+        if (adopted) {
+          return {
+            ...adopted,
+            adoptedFromRunId: null as string | null,
+          };
+        }
       }
 
       if (
