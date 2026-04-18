@@ -1430,6 +1430,61 @@ function buildProcessLossMessage(run: {
   return "Process lost -- server may have restarted";
 }
 
+function readLoggedTerminalResultText(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["message", "error", "detail", "code"] as const) {
+    const text = readNonEmptyString(record[key]);
+    if (text) return text;
+  }
+
+  try {
+    return JSON.stringify(record);
+  } catch {
+    return null;
+  }
+}
+
+function resolveLoggedTerminalResultOutcome(
+  resultJson: Record<string, unknown>,
+): "succeeded" | "failed" | "cancelled" {
+  const status = readNonEmptyString(resultJson.status)?.trim().toLowerCase() ?? "";
+  const subtype = readNonEmptyString(resultJson.subtype)?.trim().toLowerCase() ?? "";
+  if (status === "cancelled" || subtype === "cancelled" || asBoolean(resultJson.cancelled, false)) {
+    return "cancelled";
+  }
+
+  const isError =
+    resultJson.is_error === true ||
+    status === "error" ||
+    status === "failed" ||
+    subtype === "error" ||
+    subtype.startsWith("error_");
+  return isError ? "failed" : "succeeded";
+}
+
+function describeLoggedTerminalResultFailure(resultJson: Record<string, unknown>): string {
+  const subtype = readNonEmptyString(resultJson.subtype)?.trim() ?? null;
+  const detail =
+    readLoggedTerminalResultText(resultJson.error)
+    ?? readLoggedTerminalResultText(resultJson.message)
+    ?? readNonEmptyString(resultJson.result)
+    ?? readLoggedTerminalResultText(resultJson.errors);
+
+  const parts = ["Recovered terminal result from persisted run log"];
+  if (subtype) parts.push(`subtype=${subtype}`);
+  if (detail) parts.push(detail);
+  return parts.join(": ");
+}
+
 function truncateDisplayId(value: string | null | undefined, max = 128) {
   if (!value) return null;
   return value.length > max ? value.slice(0, max) : value;
@@ -2208,6 +2263,176 @@ export function heartbeatService(db: Db) {
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
   }
 
+  async function findLoggedTerminalResult(run: Pick<typeof heartbeatRuns.$inferSelect, "logStore" | "logRef">) {
+    if (!run.logStore || !run.logRef) return null;
+
+    const handle: RunLogHandle = {
+      store: run.logStore as RunLogHandle["store"],
+      logRef: run.logRef,
+    };
+    let offset = 0;
+    let outerRemainder = "";
+    let stdoutRemainder = "";
+    let stdoutRemainderTs: string | null = null;
+    let latestResult: Record<string, unknown> | null = null;
+    let latestResultTs: Date | null = null;
+
+    const flushStdoutChunk = (chunk: string, tsText: string | null) => {
+      stdoutRemainder += chunk;
+      if (tsText) stdoutRemainderTs = tsText;
+      const lines = stdoutRemainder.split(/\r?\n/);
+      stdoutRemainder = lines.pop() ?? "";
+      const lineTsText = tsText ?? stdoutRemainderTs;
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+
+        try {
+          const parsed = JSON.parse(line);
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+          const event = parsed as Record<string, unknown>;
+          if (readNonEmptyString(event.type) !== "result") continue;
+          latestResult = event;
+          const parsedTs = lineTsText ? new Date(lineTsText) : null;
+          latestResultTs = parsedTs && !Number.isNaN(parsedTs.getTime()) ? parsedTs : null;
+        } catch {
+          continue;
+        }
+      }
+
+      if (!stdoutRemainder) {
+        stdoutRemainderTs = null;
+      }
+    };
+
+    const flushWrappedLine = (rawLine: string) => {
+      const line = rawLine.trim();
+      if (!line) return;
+
+      try {
+        const parsed = JSON.parse(line);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+        const wrapped = parsed as Record<string, unknown>;
+        if (readNonEmptyString(wrapped.stream) !== "stdout") return;
+        const chunk = typeof wrapped.chunk === "string" ? wrapped.chunk : "";
+        if (!chunk) return;
+        flushStdoutChunk(chunk, readNonEmptyString(wrapped.ts));
+      } catch {
+        // Ignore malformed log lines while scanning for a terminal result.
+      }
+    };
+
+    try {
+      while (true) {
+        const read = await runLogStore.read(handle, { offset });
+        outerRemainder += read.content;
+        const wrappedLines = outerRemainder.split(/\r?\n/);
+        outerRemainder = wrappedLines.pop() ?? "";
+        for (const line of wrappedLines) {
+          flushWrappedLine(line);
+        }
+
+        if (typeof read.nextOffset !== "number") break;
+        offset = read.nextOffset;
+      }
+    } catch {
+      return null;
+    }
+
+    if (outerRemainder.trim()) {
+      flushWrappedLine(outerRemainder);
+    }
+    if (stdoutRemainder.trim()) {
+      flushStdoutChunk("\n", stdoutRemainderTs);
+    }
+
+    return latestResult ? { resultJson: latestResult, finishedAt: latestResultTs } : null;
+  }
+
+  async function recoverRunFromLoggedTerminalResult(
+    run: typeof heartbeatRuns.$inferSelect,
+    loggedResult: { resultJson: Record<string, unknown>; finishedAt: Date | null },
+    now: Date,
+  ) {
+    const outcome = resolveLoggedTerminalResultOutcome(loggedResult.resultJson);
+    const status = outcome === "failed" ? "failed" : outcome === "cancelled" ? "cancelled" : "succeeded";
+    const finishedAt = loggedResult.finishedAt ?? now;
+    const summaryText = buildHeartbeatRunIssueComment(loggedResult.resultJson);
+    const persistedResultJson = mergeHeartbeatRunResultJson(loggedResult.resultJson, summaryText);
+    const logSummary =
+      run.logStore && run.logRef
+        ? await runLogStore.finalize({
+            store: run.logStore as RunLogHandle["store"],
+            logRef: run.logRef,
+          }).catch(() => null)
+        : null;
+
+    const subtype = readNonEmptyString(loggedResult.resultJson.subtype)?.trim().toLowerCase() ?? "";
+    const error =
+      outcome === "failed"
+        ? describeLoggedTerminalResultFailure(loggedResult.resultJson)
+        : outcome === "cancelled"
+          ? readLoggedTerminalResultText(loggedResult.resultJson.message) ?? "Recovered terminal result reported cancellation"
+          : null;
+    const errorCode =
+      outcome === "failed"
+        ? (subtype === "error" || subtype.startsWith("error_") ? subtype : "adapter_failed")
+        : outcome === "cancelled"
+          ? "cancelled"
+          : null;
+
+    const finalizedRun = await setRunStatus(run.id, status, {
+      finishedAt,
+      error,
+      errorCode,
+      resultJson: persistedResultJson,
+      logBytes: logSummary?.bytes,
+      logSha256: logSummary?.sha256,
+      logCompressed: logSummary?.compressed ?? false,
+    });
+    await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
+      finishedAt,
+      error,
+    });
+    if (!finalizedRun) return null;
+
+    await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: outcome === "succeeded" ? "info" : outcome === "cancelled" ? "warn" : "error",
+      message: `run ${outcome} from persisted terminal result`,
+      payload: {
+        recoveredFromLog: true,
+        ...(run.processPid ? { processPid: run.processPid } : {}),
+        ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+        ...(loggedResult.finishedAt ? { terminalResultAt: loggedResult.finishedAt.toISOString() } : {}),
+      },
+    });
+
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    if (issueId && outcome === "succeeded") {
+      try {
+        const existingRunComment = await findRunIssueComment(finalizedRun.id, finalizedRun.companyId, issueId);
+        if (!existingRunComment) {
+          const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
+          if (issueComment) {
+            await issuesSvc.addComment(issueId, issueComment, { agentId: run.agentId, runId: finalizedRun.id });
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, runId: run.id, issueId }, "failed to post recovered run summary comment");
+      }
+    }
+
+    const agent = await getAgent(run.agentId);
+    if (agent) {
+      await finalizeIssueCommentPolicy(finalizedRun, agent);
+    }
+    await releaseIssueExecutionAndPromote(finalizedRun);
+    return { finalizedRun, outcome };
+  }
+
   async function appendRunEvent(
     run: typeof heartbeatRuns.$inferSelect,
     seq: number,
@@ -2956,6 +3181,18 @@ export function heartbeatService(db: Db) {
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
+        const loggedResult = await findLoggedTerminalResult(run);
+        if (loggedResult) {
+          const recoveredRun = await recoverRunFromLoggedTerminalResult(run, loggedResult, now);
+          if (recoveredRun) {
+            await finalizeAgentStatus(run.agentId, recoveredRun.outcome);
+            await startNextQueuedRunForAgent(run.agentId);
+            runningProcesses.delete(run.id);
+            reaped.push(run.id);
+            continue;
+          }
+        }
+
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
