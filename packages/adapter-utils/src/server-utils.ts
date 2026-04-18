@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import { constants as fsConstants, existsSync, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import type {
   AdapterSkillEntry,
@@ -562,6 +562,38 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+function uniquePathEntries(entries: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const entry of entries) {
+    const trimmed = entry.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    output.push(trimmed);
+  }
+  return output;
+}
+
+function pathEntries(value: string): string[] {
+  return uniquePathEntries(value.split(path.delimiter));
+}
+
+function supplementalPathEntries(env: NodeJS.ProcessEnv): string[] {
+  if (process.platform === "win32") return pathEntries(defaultPathForPlatform());
+
+  const home = env.HOME ?? process.env.HOME ?? "";
+  const user = env.USER ?? process.env.USER ?? "";
+  const candidates = [
+    ...pathEntries(defaultPathForPlatform()),
+    home ? path.join(home, ".nix-profile", "bin") : "",
+    home ? path.join(home, ".local", "state", "nix", "profile", "bin") : "",
+    user ? path.join("/etc/profiles/per-user", user, "bin") : "",
+    "/run/current-system/sw/bin",
+    "/nix/var/nix/profiles/default/bin",
+  ];
+  return uniquePathEntries(candidates.filter((entry) => entry && existsSync(entry)));
+}
+
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
@@ -646,9 +678,17 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const pathKey =
+    typeof env.PATH === "string" && env.PATH.length > 0
+      ? "PATH"
+      : typeof env.Path === "string" && env.Path.length > 0
+        ? "Path"
+        : "PATH";
+  const currentValue = env[pathKey] ?? "";
+  const nextEntries = uniquePathEntries([...pathEntries(currentValue), ...supplementalPathEntries(env)]);
+  const nextValue = nextEntries.join(path.delimiter);
+  if (nextValue === currentValue) return env;
+  return { ...env, [pathKey]: nextValue };
 }
 
 export async function ensureAbsoluteDirectory(

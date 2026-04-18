@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runChildProcess } from "./server-utils.js";
+import { ensurePathInEnv, runChildProcess } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
   try {
@@ -19,6 +22,37 @@ async function waitForPidExit(pid: number, timeoutMs = 2_000) {
   }
   return !isPidAlive(pid);
 }
+
+describe("ensurePathInEnv", () => {
+  it.skipIf(process.platform === "win32")("appends nix profile bins even when PATH already exists", async () => {
+    const root = path.join(os.tmpdir(), `paperclip-path-env-${randomUUID()}`);
+    const home = path.join(root, "home");
+    const nixProfileBin = path.join(home, ".nix-profile", "bin");
+    const stateProfileBin = path.join(home, ".local", "state", "nix", "profile", "bin");
+
+    try {
+      await fs.mkdir(nixProfileBin, { recursive: true });
+      await fs.mkdir(stateProfileBin, { recursive: true });
+
+      const result = ensurePathInEnv({
+        HOME: home,
+        USER: "paperclip-test-user",
+        PATH: ["/tmp/paperclip-custom-bin", nixProfileBin].join(path.delimiter),
+      });
+
+      const pathValue = result.PATH ?? "";
+      const entries = pathValue.split(path.delimiter);
+
+      expect(entries).toContain("/tmp/paperclip-custom-bin");
+      expect(entries).toContain(nixProfileBin);
+      expect(entries).toContain(stateProfileBin);
+      expect(entries.filter((entry) => entry === nixProfileBin)).toHaveLength(1);
+      expect(entries.filter((entry) => entry === stateProfileBin)).toHaveLength(1);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("runChildProcess", () => {
   it("waits for onSpawn before sending stdin to the child", async () => {
