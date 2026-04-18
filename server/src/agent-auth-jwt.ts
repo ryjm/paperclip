@@ -1,4 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { parse as parseEnvFileContents } from "dotenv";
+import { resolvePaperclipEnvPath } from "./paths.js";
 
 interface JwtHeader {
   alg: string;
@@ -18,6 +21,7 @@ export interface LocalAgentJwtClaims {
 }
 
 const JWT_ALGORITHM = "HS256";
+const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
@@ -25,8 +29,30 @@ function parseNumber(value: string | undefined, fallback: number) {
   return Math.floor(parsed);
 }
 
+function readTrimmedEnvValue(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function readJwtSecretFromEnvFile(): string | null {
+  if (!existsSync(PAPERCLIP_ENV_FILE_PATH)) return null;
+
+  try {
+    const parsed = parseEnvFileContents(readFileSync(PAPERCLIP_ENV_FILE_PATH, "utf8"));
+    return (
+      readTrimmedEnvValue(parsed.PAPERCLIP_AGENT_JWT_SECRET) ??
+      readTrimmedEnvValue(parsed.BETTER_AUTH_SECRET)
+    );
+  } catch {
+    return null;
+  }
+}
+
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+  const secret =
+    readTrimmedEnvValue(process.env.PAPERCLIP_AGENT_JWT_SECRET) ??
+    readTrimmedEnvValue(process.env.BETTER_AUTH_SECRET) ??
+    readJwtSecretFromEnvFile();
   if (!secret) return null;
 
   return {
