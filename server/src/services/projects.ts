@@ -10,6 +10,7 @@ import {
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
+  type LocalWorkspaceGitState,
   type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
@@ -17,6 +18,7 @@ import {
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { inspectLocalWorkspaceGitState } from "./local-workspace-git-state.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 
 type ProjectRow = typeof projects.$inferSelect;
@@ -135,6 +137,7 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
 function toWorkspace(
   row: ProjectWorkspaceRow,
   runtimeServices: WorkspaceRuntimeService[] = [],
+  localGitState: LocalWorkspaceGitState | null = null,
 ): ProjectWorkspace {
   return {
     id: row.id,
@@ -154,6 +157,7 @@ function toWorkspace(
     sharedWorkspaceKey: row.sharedWorkspaceKey ?? null,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     runtimeConfig: readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null),
+    localGitState,
     isPrimary: row.isPrimary,
     runtimeServices,
     createdAt: row.createdAt,
@@ -206,15 +210,46 @@ function deriveProjectCodebase(input: {
 function pickPrimaryWorkspace(
   rows: ProjectWorkspaceRow[],
   runtimeServicesByWorkspaceId?: Map<string, WorkspaceRuntimeService[]>,
+  localGitStateByWorkspaceId?: Map<string, LocalWorkspaceGitState | null>,
 ): ProjectWorkspace | null {
   if (rows.length === 0) return null;
   const explicitPrimary = rows.find((row) => row.isPrimary);
   const primary = explicitPrimary ?? rows[0];
-  return toWorkspace(primary, runtimeServicesByWorkspaceId?.get(primary.id) ?? []);
+  return toWorkspace(
+    primary,
+    runtimeServicesByWorkspaceId?.get(primary.id) ?? [],
+    localGitStateByWorkspaceId?.get(primary.id) ?? null,
+  );
+}
+
+async function loadLocalGitStateByWorkspaceId(
+  rows: ProjectWorkspaceRow[],
+  options?: { includeLocalGitState?: boolean },
+) {
+  const includeLocalGitState = options?.includeLocalGitState ?? false;
+  if (!includeLocalGitState || rows.length === 0) {
+    return new Map<string, LocalWorkspaceGitState | null>();
+  }
+
+  const entries = await Promise.all(
+    rows.map(async (row) => {
+      const { gitState } = await inspectLocalWorkspaceGitState({
+        workspacePath: normalizeWorkspaceCwd(row.cwd),
+        trackedRef: readNonEmptyString(row.repoRef) ?? readNonEmptyString(row.defaultRef),
+      });
+      return [row.id, gitState] as const;
+    }),
+  );
+
+  return new Map(entries);
 }
 
 /** Batch-load workspace refs for a set of projects. */
-async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
+async function attachWorkspaces(
+  db: Db,
+  rows: ProjectWithGoals[],
+  options?: { includeLocalGitState?: boolean },
+): Promise<ProjectWithGoals[]> {
   if (rows.length === 0) return [];
 
   const projectIds = rows.map((r) => r.id);
@@ -234,6 +269,7 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       services.map(toRuntimeService),
     ]),
   );
+  const localGitStateByWorkspaceId = await loadLocalGitStateByWorkspaceId(workspaceRows, options);
 
   const map = new Map<string, ProjectWorkspaceRow[]>();
   for (const row of workspaceRows) {
@@ -251,9 +287,14 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       toWorkspace(
         workspace,
         sharedRuntimeServicesByWorkspaceId.get(workspace.id) ?? [],
+        localGitStateByWorkspaceId.get(workspace.id) ?? null,
       ),
     );
-    const primaryWorkspace = pickPrimaryWorkspace(projectWorkspaceRows, sharedRuntimeServicesByWorkspaceId);
+    const primaryWorkspace = pickPrimaryWorkspace(
+      projectWorkspaceRows,
+      sharedRuntimeServicesByWorkspaceId,
+      localGitStateByWorkspaceId,
+    );
     return {
       ...row,
       codebase: deriveProjectCodebase({
@@ -427,7 +468,7 @@ export function projectService(db: Db) {
       if (!row) return null;
       const [withGoals] = await attachGoals(db, [row]);
       if (!withGoals) return null;
-      const [enriched] = await attachWorkspaces(db, [withGoals]);
+      const [enriched] = await attachWorkspaces(db, [withGoals], { includeLocalGitState: true });
       return enriched ?? null;
     },
 
@@ -546,10 +587,12 @@ export function projectService(db: Db) {
         rows[0]!.companyId,
         rows.map((workspace) => workspace.id),
       );
+      const localGitStateByWorkspaceId = await loadLocalGitStateByWorkspaceId(rows, { includeLocalGitState: true });
       return rows.map((row) =>
         toWorkspace(
           row,
           (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+          localGitStateByWorkspaceId.get(row.id) ?? null,
         ),
       );
     },

@@ -1,6 +1,7 @@
 import type { PauseReason, ProjectStatus } from "../constants.js";
 import type { AgentEnvConfig } from "./secrets.js";
 import type {
+  LocalWorkspaceGitState,
   ProjectExecutionWorkspacePolicy,
   ProjectWorkspaceRuntimeConfig,
   WorkspaceRuntimeService,
@@ -32,6 +33,7 @@ export interface ProjectWorkspace {
   sharedWorkspaceKey: string | null;
   metadata: Record<string, unknown> | null;
   runtimeConfig: ProjectWorkspaceRuntimeConfig | null;
+  localGitState?: LocalWorkspaceGitState | null;
   isPrimary: boolean;
   runtimeServices?: WorkspaceRuntimeService[];
   createdAt: Date;

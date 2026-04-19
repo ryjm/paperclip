@@ -3,7 +3,7 @@
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, LocalWorkspaceGitState } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { ProjectWorkspaceSummaryCard } from "./ProjectWorkspaceSummaryCard";
@@ -68,6 +68,8 @@ function createSummary(overrides: Partial<ProjectWorkspaceSummary> = {}): Projec
     workspaceName: overrides.workspaceName ?? "PAP-989-multi-user-implementation",
     cwd: overrides.cwd ?? "/worktrees/PAP-989-multi-user-implementation",
     branchName: overrides.branchName ?? "PAP-989-multi-user-implementation",
+    trackingRef: overrides.trackingRef ?? "origin/main",
+    localGitState: overrides.localGitState ?? null,
     lastUpdatedAt: overrides.lastUpdatedAt ?? new Date("2026-04-12T00:00:00Z"),
     projectWorkspaceId: overrides.projectWorkspaceId ?? "project-workspace-1",
     executionWorkspaceId: overrides.executionWorkspaceId ?? "workspace-1",
@@ -115,6 +117,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
 
     expect(container.textContent).toContain("Execution workspace");
     expect(container.textContent).toContain("Branch");
+    expect(container.textContent).toContain("Base ref");
     expect(container.textContent).toContain("Path");
     expect(container.textContent).toContain("Service");
     expect(container.textContent).toContain("Linked issues");
@@ -124,6 +127,52 @@ describe("ProjectWorkspaceSummaryCard", () => {
 
     const actions = container.querySelector('[data-testid="workspace-summary-actions"]');
     expect(actions?.className).toContain("flex-col");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders local checkout state separately from tracked ref for project workspaces", () => {
+    const gitState: LocalWorkspaceGitState = {
+      repoRoot: "/repo",
+      workspacePath: "/repo",
+      branchName: "feature/local-state",
+      trackedRef: "origin/main",
+      hasDirtyTrackedFiles: true,
+      hasUntrackedFiles: false,
+      dirtyEntryCount: 2,
+      untrackedEntryCount: 0,
+      aheadCount: 1,
+      behindCount: 0,
+    };
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary({
+            key: "project:workspace-1",
+            kind: "project_workspace",
+            executionWorkspaceId: null,
+            executionWorkspaceStatus: null,
+            localGitState: gitState,
+            branchName: gitState.branchName,
+            trackingRef: gitState.trackedRef,
+          })}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Local branch");
+    expect(container.textContent).toContain("Tracked ref");
+    expect(container.textContent).toContain("2 dirty files");
+    expect(container.textContent).toContain("Ahead by 1");
 
     act(() => {
       root.unmount();

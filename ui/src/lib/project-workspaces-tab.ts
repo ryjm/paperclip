@@ -1,4 +1,4 @@
-import type { ExecutionWorkspace, Issue, Project } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, LocalWorkspaceGitState, Project } from "@paperclipai/shared";
 
 type ProjectWorkspaceLike = Pick<Project, "workspaces" | "primaryWorkspace">;
 
@@ -9,6 +9,8 @@ export interface ProjectWorkspaceSummary {
   workspaceName: string;
   cwd: string | null;
   branchName: string | null;
+  trackingRef: string | null;
+  localGitState: LocalWorkspaceGitState | null;
   lastUpdatedAt: Date;
   projectWorkspaceId: string | null;
   executionWorkspaceId: string | null;
@@ -89,6 +91,8 @@ export function buildProjectWorkspaceSummaries(input: {
           workspaceName: executionWorkspace.name,
           cwd: executionWorkspace.cwd ?? null,
           branchName: executionWorkspace.branchName ?? executionWorkspace.baseRef ?? null,
+          trackingRef: executionWorkspace.baseRef ?? null,
+          localGitState: null,
           lastUpdatedAt: maxDate(
             executionWorkspace.lastUsedAt,
             executionWorkspace.updatedAt,
@@ -127,7 +131,9 @@ export function buildProjectWorkspaceSummaries(input: {
         workspaceId: projectWorkspace.id,
         workspaceName: projectWorkspace.name,
         cwd: projectWorkspace.cwd ?? null,
-        branchName: projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
+        branchName: projectWorkspace.localGitState?.branchName ?? projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
+        trackingRef: projectWorkspace.localGitState?.trackedRef ?? projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
+        localGitState: projectWorkspace.localGitState ?? null,
         lastUpdatedAt: maxDate(projectWorkspace.updatedAt, issue.updatedAt),
         projectWorkspaceId: projectWorkspace.id,
         executionWorkspaceId: null,
@@ -157,7 +163,9 @@ export function buildProjectWorkspaceSummaries(input: {
       workspaceId: projectWorkspace.id,
       workspaceName: projectWorkspace.name,
       cwd: projectWorkspace.cwd ?? null,
-      branchName: projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
+      branchName: projectWorkspace.localGitState?.branchName ?? projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
+      trackingRef: projectWorkspace.localGitState?.trackedRef ?? projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
+      localGitState: projectWorkspace.localGitState ?? null,
       lastUpdatedAt: maxDate(projectWorkspace.updatedAt),
       projectWorkspaceId: projectWorkspace.id,
       executionWorkspaceId: null,

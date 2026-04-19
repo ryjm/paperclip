@@ -599,9 +599,14 @@ export function ProjectWorkspaceDetail() {
             <DetailRow label="Workspace ID">
               <span className="break-all font-mono text-xs">{workspace.id}</span>
             </DetailRow>
-            <DetailRow label="Local path">
-              <span className="break-all font-mono text-xs">{workspace.cwd ?? "None"}</span>
-            </DetailRow>
+            <DetailRow label="Updated">{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
+            <Separator className="my-4" />
+            <div className="space-y-1">
+              <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Remote reference</div>
+              <p className="text-sm text-muted-foreground">
+                Static repo metadata and external identifiers Paperclip uses to resolve or provision this workspace.
+              </p>
+            </div>
             <DetailRow label="Repo">
               {workspace.repoUrl && isSafeExternalUrl(workspace.repoUrl) ? (
                 <a href={workspace.repoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
@@ -612,8 +617,42 @@ export function ProjectWorkspaceDetail() {
                 <span className="break-all font-mono text-xs">{workspace.repoUrl}</span>
               ) : "None"}
             </DetailRow>
+            <DetailRow label="Repo ref">{workspace.repoRef ?? "None"}</DetailRow>
             <DetailRow label="Default ref">{workspace.defaultRef ?? "None"}</DetailRow>
-            <DetailRow label="Updated">{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
+            <DetailRow label="Remote provider">{workspace.remoteProvider ?? "None"}</DetailRow>
+            <DetailRow label="Remote ref">{workspace.remoteWorkspaceRef ?? "None"}</DetailRow>
+            <Separator className="my-4" />
+            <div className="space-y-1">
+              <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Local checkout</div>
+              <p className="text-sm text-muted-foreground">
+                Live git state from the current local path, kept separate from the configured remote repo reference above.
+              </p>
+            </div>
+            <DetailRow label="Local path">
+              <span className="break-all font-mono text-xs">{workspace.cwd ?? "None"}</span>
+            </DetailRow>
+            {workspace.localGitState ? (
+              <>
+                <DetailRow label="Repo root">
+                  <span className="break-all font-mono text-xs">{workspace.localGitState.repoRoot}</span>
+                </DetailRow>
+                <DetailRow label="Local branch">{workspace.localGitState.branchName ?? "Detached HEAD"}</DetailRow>
+                <DetailRow label="Tracked ref">{workspace.localGitState.trackedRef ?? "None"}</DetailRow>
+                <DetailRow label="Ahead / behind">
+                  {(workspace.localGitState.aheadCount ?? 0).toString()} / {(workspace.localGitState.behindCount ?? 0).toString()}
+                </DetailRow>
+                <DetailRow label="Dirty files">{workspace.localGitState.dirtyEntryCount}</DetailRow>
+                <DetailRow label="Untracked files">{workspace.localGitState.untrackedEntryCount}</DetailRow>
+              </>
+            ) : (
+              <div className="rounded-xl border border-border bg-muted/20 px-3 py-3 text-sm text-muted-foreground">
+                {!workspace.cwd
+                  ? "No local checkout is configured for this workspace."
+                  : workspace.sourceType === "non_git_path"
+                    ? "This workspace is configured as a non-git local path, so Paperclip does not surface git state for it."
+                    : "Paperclip could not read git metadata from the current local path."}
+              </div>
+            )}
           </div>
 
           <div className="rounded-2xl border border-border bg-card p-5">

@@ -113,17 +113,21 @@ export interface ExecutionWorkspaceCloseLinkedIssue {
   isTerminal: boolean;
 }
 
-export interface ExecutionWorkspaceCloseGitReadiness {
+export interface LocalWorkspaceGitState {
   repoRoot: string | null;
   workspacePath: string | null;
   branchName: string | null;
-  baseRef: string | null;
+  trackedRef: string | null;
   hasDirtyTrackedFiles: boolean;
   hasUntrackedFiles: boolean;
   dirtyEntryCount: number;
   untrackedEntryCount: number;
   aheadCount: number | null;
   behindCount: number | null;
+}
+
+export interface ExecutionWorkspaceCloseGitReadiness extends LocalWorkspaceGitState {
+  baseRef: string | null;
   isMergedIntoBase: boolean | null;
   createdByRuntime: boolean;
 }
