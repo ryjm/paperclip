@@ -2243,25 +2243,23 @@ export function issueService(db: Db) {
 
       const conditions = [eq(issueComments.issueId, issueId)];
       if (afterCommentId) {
-        const anchor = await db
-          .select({
-            id: issueComments.id,
-            createdAt: issueComments.createdAt,
-          })
+        const anchorExists = await db
+          .select({ id: issueComments.id })
           .from(issueComments)
           .where(and(eq(issueComments.issueId, issueId), eq(issueComments.id, afterCommentId)))
-          .then((rows) => rows[0] ?? null);
+          .then((rows) => rows.length > 0);
 
-        if (!anchor) return [];
+        if (!anchorExists) return [];
+        const anchorCreatedAt = sql`(SELECT ${issueComments.createdAt} FROM ${issueComments} WHERE ${eq(issueComments.id, afterCommentId)})`;
         conditions.push(
           order === "asc"
             ? sql<boolean>`(
-                ${issueComments.createdAt} > ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} > ${anchor.id})
+                ${issueComments.createdAt} > ${anchorCreatedAt}
+                OR (${issueComments.createdAt} = ${anchorCreatedAt} AND ${issueComments.id} > ${afterCommentId})
               )`
             : sql<boolean>`(
-                ${issueComments.createdAt} < ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} < ${anchor.id})
+                ${issueComments.createdAt} < ${anchorCreatedAt}
+                OR (${issueComments.createdAt} = ${anchorCreatedAt} AND ${issueComments.id} < ${afterCommentId})
               )`,
         );
       }
