@@ -46,6 +46,7 @@ type CapturePayload = {
 };
 
 const execFileAsync = promisify(execFile);
+const TEST_LOCAL_AGENT_AUTH_SECRET = "paperclip-local-agent-api-key-injection-test-secret";
 
 function clearPaperclipEnv() {
   for (const key of Object.keys(process.env)) {
@@ -255,7 +256,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
   beforeAll(async () => {
     clearPaperclipEnv();
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-    delete process.env.BETTER_AUTH_SECRET;
+    process.env.BETTER_AUTH_SECRET = TEST_LOCAL_AGENT_AUTH_SECRET;
 
     databaseDir = await mkdtemp(join(tmpdir(), "paperclip-heartbeat-auth-"));
     const port = await getAvailablePort();
