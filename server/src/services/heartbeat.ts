@@ -1081,14 +1081,7 @@ function shouldAutoCheckoutIssueForWake(input: {
   if (input.issueAssigneeAgentId !== input.agentId) return false;
 
   const issueStatus = readNonEmptyString(input.issueStatus);
-  if (
-    issueStatus !== "todo" &&
-    issueStatus !== "backlog" &&
-    issueStatus !== "blocked" &&
-    issueStatus !== "in_progress"
-  ) {
-    return false;
-  }
+  if (issueStatus !== "in_progress") return false;
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
