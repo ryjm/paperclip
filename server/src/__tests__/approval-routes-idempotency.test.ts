@@ -29,6 +29,13 @@ const mockSecretService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const APPROVAL_ID_1 = "11111111-1111-4111-8111-111111111111";
+const APPROVAL_ID_2 = "22222222-2222-4222-8222-222222222222";
+const APPROVAL_ID_3 = "33333333-3333-4333-8333-333333333333";
+const APPROVAL_ID_4 = "44444444-4444-4444-8444-444444444444";
+const APPROVAL_ID_5 = "55555555-5555-4555-8555-555555555555";
+const APPROVAL_ID_6 = "66666666-6666-4666-8666-666666666666";
+
 vi.mock("../services/index.js", () => ({
   approvalService: () => mockApprovalService,
   heartbeatService: () => mockHeartbeatService,
@@ -106,7 +113,7 @@ describe("approval routes idempotent retries", () => {
 
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
     mockApprovalService.getById.mockResolvedValue({
-      id: "approval-1",
+      id: APPROVAL_ID_1,
       companyId: "company-1",
       type: "hire_agent",
       status: "approved",
@@ -115,7 +122,7 @@ describe("approval routes idempotent retries", () => {
     });
     mockApprovalService.approve.mockResolvedValue({
       approval: {
-        id: "approval-1",
+        id: APPROVAL_ID_1,
         companyId: "company-1",
         type: "hire_agent",
         status: "approved",
@@ -126,7 +133,7 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(await createApp())
-      .post("/api/approvals/approval-1/approve")
+      .post(`/api/approvals/${APPROVAL_ID_1}/approve`)
       .send({});
 
     expect(res.status).toBe(200);
@@ -137,7 +144,7 @@ describe("approval routes idempotent retries", () => {
 
   it("does not emit duplicate rejection logs when reject is already resolved", async () => {
     mockApprovalService.getById.mockResolvedValue({
-      id: "approval-1",
+      id: APPROVAL_ID_1,
       companyId: "company-1",
       type: "hire_agent",
       status: "rejected",
@@ -145,7 +152,7 @@ describe("approval routes idempotent retries", () => {
     });
     mockApprovalService.reject.mockResolvedValue({
       approval: {
-        id: "approval-1",
+        id: APPROVAL_ID_1,
         companyId: "company-1",
         type: "hire_agent",
         status: "rejected",
@@ -155,7 +162,7 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(await createApp())
-      .post("/api/approvals/approval-1/reject")
+      .post(`/api/approvals/${APPROVAL_ID_1}/reject`)
       .send({});
 
     expect(res.status).toBe(200);
@@ -164,7 +171,7 @@ describe("approval routes idempotent retries", () => {
 
   it("rejects approval decisions for companies outside the caller scope", async () => {
     mockApprovalService.getById.mockResolvedValue({
-      id: "approval-2",
+      id: APPROVAL_ID_2,
       companyId: "company-2",
       type: "hire_agent",
       status: "pending",
@@ -172,7 +179,7 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(await createApp())
-      .post("/api/approvals/approval-2/approve")
+      .post(`/api/approvals/${APPROVAL_ID_2}/approve`)
       .send({});
 
     expect(res.status).toBe(403);
@@ -181,7 +188,7 @@ describe("approval routes idempotent retries", () => {
 
   it("rejects approval revision requests for companies outside the caller scope", async () => {
     mockApprovalService.getById.mockResolvedValue({
-      id: "approval-3",
+      id: APPROVAL_ID_3,
       companyId: "company-2",
       type: "hire_agent",
       status: "pending",
@@ -189,7 +196,7 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(await createApp())
-      .post("/api/approvals/approval-3/request-revision")
+      .post(`/api/approvals/${APPROVAL_ID_3}/request-revision`)
       .send({ decisionNote: "Need changes" });
 
     expect(res.status).toBe(403);
@@ -198,7 +205,7 @@ describe("approval routes idempotent retries", () => {
 
   it("derives approval attribution from the authenticated actor on approve", async () => {
     mockApprovalService.getById.mockResolvedValue({
-      id: "approval-4",
+      id: APPROVAL_ID_4,
       companyId: "company-1",
       type: "hire_agent",
       status: "pending",
@@ -207,7 +214,7 @@ describe("approval routes idempotent retries", () => {
     });
     mockApprovalService.approve.mockResolvedValue({
       approval: {
-        id: "approval-4",
+        id: APPROVAL_ID_4,
         companyId: "company-1",
         type: "hire_agent",
         status: "approved",
@@ -218,16 +225,16 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(await createApp())
-      .post("/api/approvals/approval-4/approve")
+      .post(`/api/approvals/${APPROVAL_ID_4}/approve`)
       .send({ decidedByUserId: "forged-user", decisionNote: "ship it" });
 
     expect(res.status).toBe(200);
-    expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
+    expect(mockApprovalService.approve).toHaveBeenCalledWith(APPROVAL_ID_4, "user-1", "ship it");
   });
 
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
-      id: "approval-5",
+      id: APPROVAL_ID_5,
       companyId: "company-1",
       type: "hire_agent",
       status: "pending",
@@ -235,7 +242,7 @@ describe("approval routes idempotent retries", () => {
     });
     mockApprovalService.reject.mockResolvedValue({
       approval: {
-        id: "approval-5",
+        id: APPROVAL_ID_5,
         companyId: "company-1",
         type: "hire_agent",
         status: "rejected",
@@ -245,23 +252,23 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(await createApp())
-      .post("/api/approvals/approval-5/reject")
+      .post(`/api/approvals/${APPROVAL_ID_5}/reject`)
       .send({ decidedByUserId: "forged-user", decisionNote: "not now" });
 
     expect(res.status).toBe(200);
-    expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
+    expect(mockApprovalService.reject).toHaveBeenCalledWith(APPROVAL_ID_5, "user-1", "not now");
   });
 
   it("derives approval attribution from the authenticated actor on request revision", async () => {
     mockApprovalService.getById.mockResolvedValue({
-      id: "approval-6",
+      id: APPROVAL_ID_6,
       companyId: "company-1",
       type: "hire_agent",
       status: "pending",
       payload: {},
     });
     mockApprovalService.requestRevision.mockResolvedValue({
-      id: "approval-6",
+      id: APPROVAL_ID_6,
       companyId: "company-1",
       type: "hire_agent",
       status: "revision_requested",
@@ -269,12 +276,12 @@ describe("approval routes idempotent retries", () => {
     });
 
     const res = await request(await createApp())
-      .post("/api/approvals/approval-6/request-revision")
+      .post(`/api/approvals/${APPROVAL_ID_6}/request-revision`)
       .send({ decidedByUserId: "forged-user", decisionNote: "Need changes" });
 
     expect(res.status).toBe(200);
     expect(mockApprovalService.requestRevision).toHaveBeenCalledWith(
-      "approval-6",
+      APPROVAL_ID_6,
       "user-1",
       "Need changes",
     );
@@ -282,7 +289,7 @@ describe("approval routes idempotent retries", () => {
 
   it("lets agents create generic issue-linked board approval requests", async () => {
     mockApprovalService.create.mockResolvedValue({
-      id: "approval-1",
+      id: APPROVAL_ID_1,
       companyId: "company-1",
       type: "request_board_approval",
       requestedByAgentId: "agent-1",
@@ -317,7 +324,7 @@ describe("approval routes idempotent retries", () => {
     );
     expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
-      "approval-1",
+      APPROVAL_ID_1,
       ["00000000-0000-0000-0000-000000000001"],
       { agentId: "agent-1", userId: null },
     );
