@@ -47,6 +47,14 @@ type CapturePayload = {
 
 const execFileAsync = promisify(execFile);
 
+function clearPaperclipEnv() {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("PAPERCLIP_")) {
+      delete process.env[key];
+    }
+  }
+}
+
 function getAvailablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -237,11 +245,15 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
   let companyId = "";
   let issueNumber = 1;
   const heartbeat = () => heartbeatService(db);
+  const originalPaperclipEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.startsWith("PAPERCLIP_")),
+  );
   const originalJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   const originalBetterAuthSecret = process.env.BETTER_AUTH_SECRET;
   const originalCodexHome = process.env.CODEX_HOME;
 
   beforeAll(async () => {
+    clearPaperclipEnv();
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     delete process.env.BETTER_AUTH_SECRET;
 
@@ -277,6 +289,10 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
   }, 120_000);
 
   afterAll(async () => {
+    clearPaperclipEnv();
+    for (const [key, value] of Object.entries(originalPaperclipEnv)) {
+      process.env[key] = value;
+    }
     if (originalJwtSecret === undefined) {
       delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     } else {
@@ -352,6 +368,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       repoRef?: string | null;
     };
   }) {
+    clearPaperclipEnv();
     const root = await mkdtemp(join(tmpdir(), `paperclip-${input.adapterType}-wake-`));
     const workspace = join(root, "workspace");
     const commandPath = join(root, "agent");
@@ -469,6 +486,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       const capture = JSON.parse(await readFile(capturePath, "utf8")) as CapturePayload;
       return { capture, run, issueId, wakeCommentId };
     } finally {
+      clearPaperclipEnv();
       if (input.adapterType === "codex_local") {
         if (previousCodexHome === undefined) {
           delete process.env.CODEX_HOME;
