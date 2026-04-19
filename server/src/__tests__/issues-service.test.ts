@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -54,6 +55,55 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   let svc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
+  async function seedCompanyAndAgent() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    return { companyId, agentId, issuePrefix };
+  }
+
+  async function insertHeartbeatRun(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    status: string;
+    contextSnapshot?: Record<string, unknown>;
+  }) {
+    const now = new Date("2026-04-01T00:00:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: input.runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "assignment",
+      triggerDetail: "test",
+      status: input.status,
+      contextSnapshot: input.contextSnapshot,
+      startedAt: now,
+      finishedAt: input.status === "queued" || input.status === "running" ? null : now,
+      updatedAt: now,
+    });
+  }
+
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-");
     db = createDb(tempDb.connectionString);
@@ -66,6 +116,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -250,6 +301,102 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
 
+  it("reconciles stale execution locks in list results before building inbox data", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const staleRunId = randomUUID();
+    const issueId = randomUUID();
+    const lockedAt = new Date("2026-04-01T00:05:00.000Z");
+
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: staleRunId,
+      status: "failed",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Inbox drift issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: staleRunId,
+      executionLockedAt: lockedAt,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const result = await svc.list(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.executionRunId).toBeNull();
+    expect(result[0]?.activeRun).toBeNull();
+
+    const persisted = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it("reconciles stale execution locks in raw issue reads", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const staleRunId = randomUUID();
+    const issueId = randomUUID();
+    const lockedAt = new Date("2026-04-01T00:05:00.000Z");
+
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: staleRunId,
+      status: "succeeded",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Raw issue drift",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: staleRunId,
+      executionLockedAt: lockedAt,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const issue = await svc.getById(issueId);
+
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionLockedAt).toBeNull();
+
+    const persisted = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+  });
+
   it("applies result limits to issue search", async () => {
     const companyId = randomUUID();
 
@@ -344,6 +491,397 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
   });
 
+  it("clears stale execution locks before retrying checkout", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const staleRunId = randomUUID();
+    const currentRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: staleRunId,
+      status: "failed",
+    });
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: currentRunId,
+      status: "running",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout should recover",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: staleRunId,
+      executionLockedAt: new Date("2026-04-01T00:05:00.000Z"),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo", "backlog", "blocked", "in_progress"], currentRunId);
+
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    const persisted = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("allows the same agent to adopt an in-progress issue when checkout is missing and execution points at an orphan queued run", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const orphanQueuedRunId = randomUUID();
+    const currentRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: orphanQueuedRunId,
+      status: "queued",
+      contextSnapshot: { issueId },
+    });
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: currentRunId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Adopt orphan queued run",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: orphanQueuedRunId,
+      executionLockedAt: new Date("2026-04-01T00:05:00.000Z"),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["in_progress"], currentRunId);
+
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    const persisted = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("does not adopt a missing checkout when the queued execution run belongs to a different issue", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const orphanQueuedRunId = randomUUID();
+    const currentRunId = randomUUID();
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: orphanQueuedRunId,
+      status: "queued",
+      contextSnapshot: { issueId: otherIssueId },
+    });
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: currentRunId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued run points at another issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: orphanQueuedRunId,
+      executionLockedAt: new Date("2026-04-01T00:05:00.000Z"),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await expect(
+      svc.checkout(issueId, agentId, ["in_progress"], currentRunId),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const persisted = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      checkoutRunId: null,
+      executionRunId: orphanQueuedRunId,
+    });
+  });
+
+  it("lets assertCheckoutOwner adopt an orphan queued execution run for the same issue", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const orphanQueuedRunId = randomUUID();
+    const currentRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: orphanQueuedRunId,
+      status: "queued",
+      contextSnapshot: { issueId },
+    });
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: currentRunId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Assert owner can adopt orphan queued run",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: orphanQueuedRunId,
+      executionLockedAt: new Date("2026-04-01T00:05:00.000Z"),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const ownership = await svc.assertCheckoutOwner(issueId, agentId, currentRunId);
+
+    expect(ownership).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      adoptedFromRunId: null,
+    });
+
+    const persisted = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("does not let assertCheckoutOwner adopt when the queued execution run belongs to a different agent", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const otherAgentId = randomUUID();
+    const orphanQueuedRunId = randomUUID();
+    const currentRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await insertHeartbeatRun({
+      companyId,
+      agentId: otherAgentId,
+      runId: orphanQueuedRunId,
+      status: "queued",
+      contextSnapshot: { issueId },
+    });
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId: currentRunId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued run belongs to another agent",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: orphanQueuedRunId,
+      executionLockedAt: new Date("2026-04-01T00:05:00.000Z"),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await expect(
+      svc.assertCheckoutOwner(issueId, agentId, currentRunId),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const persisted = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toEqual({
+      checkoutRunId: null,
+      executionRunId: orphanQueuedRunId,
+    });
+  });
+
+  it("releases checkout and execution lock state together", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+
+    await insertHeartbeatRun({
+      companyId,
+      agentId,
+      runId,
+      status: "running",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Release should clear lock state",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionLockedAt: new Date("2026-04-01T00:05:00.000Z"),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const released = await svc.release(issueId, agentId, runId);
+
+    expect(released).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it("assigns the default project workspace when creating a project-backed issue without an explicit workspace", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace Routing",
+      status: "active",
+      executionWorkspacePolicy: {
+        defaultProjectWorkspaceId: projectWorkspaceId,
+      },
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary Workspace",
+      sourceType: "local_path",
+      cwd: `/tmp/${projectWorkspaceId}`,
+      repoRef: null,
+      isPrimary: true,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Route workspace from mentioned project",
+      status: "todo",
+      priority: "medium",
+      projectId,
+    });
+
+    expect(created.projectId).toBe(projectId);
+    expect(created.projectWorkspaceId).toBe(projectWorkspaceId);
+  });
+
   it("accepts issue identifiers through getById", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
@@ -383,6 +921,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   it("filters issues by execution workspace id", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
     const targetWorkspaceId = randomUUID();
     const otherWorkspaceId = randomUUID();
     const linkedIssueId = randomUUID();
@@ -401,6 +940,15 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       companyId,
       name: "Workspace project",
       status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+      sharedWorkspaceKey: "workspace-key",
     });
 
     await db.insert(executionWorkspaces).values([
@@ -793,6 +1341,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       isPrimary: true,
       sharedWorkspaceKey: "workspace-key",
     });
+
 
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
