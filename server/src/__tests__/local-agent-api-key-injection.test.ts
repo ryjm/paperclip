@@ -106,7 +106,7 @@ async function createGitWorkspace(root: string) {
 }
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
-  const script = `#!/usr/bin/env node
+  const script = `#!${process.execPath}
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
@@ -156,7 +156,7 @@ console.log(
 }
 
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
-  const script = `#!/usr/bin/env node
+  const script = `#!${process.execPath}
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
@@ -483,6 +483,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
     try {
       expect(wakeup).not.toBeNull();
       const run = await waitForRun(heartbeat(), wakeup!.id);
+      expect(run.status).toBe("succeeded");
       const capture = JSON.parse(await readFile(capturePath, "utf8")) as CapturePayload;
       return { capture, run, issueId, wakeCommentId };
     } finally {
