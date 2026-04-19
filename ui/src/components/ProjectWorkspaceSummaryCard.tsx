@@ -18,6 +18,27 @@ function truncatePath(path: string) {
   return `…/${parts.slice(-3).join("/")}`;
 }
 
+function localGitStatusLabels(summary: ProjectWorkspaceSummary) {
+  const gitState = summary.localGitState;
+  if (!gitState) return [];
+
+  const labels: string[] = [];
+  if (gitState.hasDirtyTrackedFiles) {
+    labels.push(gitState.dirtyEntryCount === 1 ? "1 dirty file" : `${gitState.dirtyEntryCount} dirty files`);
+  }
+  if (gitState.hasUntrackedFiles) {
+    labels.push(gitState.untrackedEntryCount === 1 ? "1 untracked file" : `${gitState.untrackedEntryCount} untracked files`);
+  }
+  if ((gitState.aheadCount ?? 0) > 0) {
+    labels.push(gitState.aheadCount === 1 ? "Ahead by 1" : `Ahead by ${gitState.aheadCount}`);
+  }
+  if ((gitState.behindCount ?? 0) > 0) {
+    labels.push(gitState.behindCount === 1 ? "Behind by 1" : `Behind by ${gitState.behindCount}`);
+  }
+  if (labels.length === 0) labels.push("Local checkout clean");
+  return labels;
+}
+
 interface ProjectWorkspaceSummaryCardProps {
   projectRef: string;
   summary: ProjectWorkspaceSummary;
@@ -52,6 +73,7 @@ export function ProjectWorkspaceSummaryCard({
       : `/execution-workspaces/${summary.workspaceId}`;
   const hasRunningServices = summary.runningServiceCount > 0;
   const actionKey = `${summary.key}:${hasRunningServices ? "stop" : "start"}`;
+  const localGitLabels = localGitStatusLabels(summary);
 
   return (
     <div className="border-b border-border px-4 py-4 last:border-b-0 sm:px-5">
@@ -86,6 +108,24 @@ export function ProjectWorkspaceSummaryCard({
               {summary.executionWorkspaceStatus ? (
                 <span className="inline-flex items-center rounded-full border border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground">
                   {summary.executionWorkspaceStatus.replace(/_/g, " ")}
+                </span>
+              ) : null}
+              {localGitLabels.map((label) => (
+                <span
+                  key={label}
+                  className={cn(
+                    "inline-flex items-center rounded-full border px-2.5 py-1 text-xs",
+                    label === "Local checkout clean"
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                      : "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+                  )}
+                >
+                  {label}
+                </span>
+              ))}
+              {summary.kind === "project_workspace" && summary.cwd && !summary.localGitState ? (
+                <span className="inline-flex items-center rounded-full border border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground">
+                  Git state unavailable
                 </span>
               ) : null}
             </div>
@@ -149,8 +189,22 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0">
-                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Branch</div>
+                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                    {summary.localGitState ? "Local branch" : "Branch"}
+                  </div>
                   <div className="break-all font-mono text-xs text-foreground">{summary.branchName}</div>
+                </div>
+              </div>
+            ) : null}
+
+            {summary.trackingRef && summary.trackingRef !== summary.branchName ? (
+              <div className="flex items-start gap-2">
+                <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0">
+                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                    {summary.localGitState ? "Tracked ref" : "Base ref"}
+                  </div>
+                  <div className="break-all font-mono text-xs text-foreground">{summary.trackingRef}</div>
                 </div>
               </div>
             ) : null}

@@ -119,6 +119,10 @@ export {
 } from "./agent.js";
 
 export {
+  localWorkspaceGitStateSchema,
+} from "./workspace-git.js";
+
+export {
   createProjectSchema,
   updateProjectSchema,
   createProjectWorkspaceSchema,
