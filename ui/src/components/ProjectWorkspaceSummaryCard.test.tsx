@@ -179,6 +179,50 @@ describe("ProjectWorkspaceSummaryCard", () => {
     });
   });
 
+  it("does not label divergence as clean when ahead and behind counts are unknown", () => {
+    const gitState: LocalWorkspaceGitState = {
+      repoRoot: "/repo",
+      workspacePath: "/repo",
+      branchName: "feature/local-state",
+      trackedRef: null,
+      hasDirtyTrackedFiles: false,
+      hasUntrackedFiles: false,
+      dirtyEntryCount: 0,
+      untrackedEntryCount: 0,
+      aheadCount: null,
+      behindCount: null,
+    };
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary({
+            key: "project:workspace-unknown",
+            kind: "project_workspace",
+            executionWorkspaceId: null,
+            executionWorkspaceStatus: null,
+            localGitState: gitState,
+            branchName: gitState.branchName,
+            trackingRef: gitState.trackedRef,
+          })}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Ahead/behind unknown");
+    expect(container.textContent).not.toContain("Local checkout clean");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("uses project workspace routes and omits close controls for project workspaces", () => {
     const runtimeSpy = vi.fn();
     const closeSpy = vi.fn();

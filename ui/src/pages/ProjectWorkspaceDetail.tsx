@@ -639,7 +639,9 @@ export function ProjectWorkspaceDetail() {
                 <DetailRow label="Local branch">{workspace.localGitState.branchName ?? "Detached HEAD"}</DetailRow>
                 <DetailRow label="Tracked ref">{workspace.localGitState.trackedRef ?? "None"}</DetailRow>
                 <DetailRow label="Ahead / behind">
-                  {(workspace.localGitState.aheadCount ?? 0).toString()} / {(workspace.localGitState.behindCount ?? 0).toString()}
+                  {workspace.localGitState.aheadCount === null || workspace.localGitState.behindCount === null
+                    ? "Unknown"
+                    : `${workspace.localGitState.aheadCount} / ${workspace.localGitState.behindCount}`}
                 </DetailRow>
                 <DetailRow label="Dirty files">{workspace.localGitState.dirtyEntryCount}</DetailRow>
                 <DetailRow label="Untracked files">{workspace.localGitState.untrackedEntryCount}</DetailRow>

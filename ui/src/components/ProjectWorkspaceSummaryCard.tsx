@@ -35,6 +35,9 @@ function localGitStatusLabels(summary: ProjectWorkspaceSummary) {
   if ((gitState.behindCount ?? 0) > 0) {
     labels.push(gitState.behindCount === 1 ? "Behind by 1" : `Behind by ${gitState.behindCount}`);
   }
+  if (gitState.aheadCount === null || gitState.behindCount === null) {
+    labels.push("Ahead/behind unknown");
+  }
   if (labels.length === 0) labels.push("Local checkout clean");
   return labels;
 }
