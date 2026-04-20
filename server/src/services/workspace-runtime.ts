@@ -566,6 +566,14 @@ async function resolveGitOwnerRepoRoot(cwd: string): Promise<string> {
   return path.dirname(path.resolve(checkoutRoot, commonDir));
 }
 
+function inferRepoManagedWorktreeRepoRoot(worktreePath: string): string | null {
+  const normalized = path.resolve(worktreePath);
+  const marker = `${path.sep}.paperclip${path.sep}worktrees${path.sep}`;
+  const markerIndex = normalized.lastIndexOf(marker);
+  if (markerIndex <= 0) return null;
+  return normalized.slice(0, markerIndex);
+}
+
 async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: string): Promise<string | null> {
   const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
   if (!raw) return null;
@@ -1224,8 +1232,25 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     return realized;
   }
 
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
   const worktreePath = realized.worktreePath ?? cwd;
+  const inferredRepoRoot = inferRepoManagedWorktreeRepoRoot(worktreePath);
+  const repoRoot =
+    await resolveGitOwnerRepoRoot(input.base.baseCwd).catch(async (baseError) => {
+      if (!inferredRepoRoot) {
+        const reason = baseError instanceof Error ? baseError.message : String(baseError);
+        throw new Error(
+          `Execution workspace "${cwd}" is missing and cannot be restored because base workspace "${input.base.baseCwd}" is not a git checkout: ${reason}`,
+        );
+      }
+
+      const restoredRepoRoot = await resolveGitOwnerRepoRoot(inferredRepoRoot).catch(() => null);
+      if (restoredRepoRoot) return restoredRepoRoot;
+
+      const reason = baseError instanceof Error ? baseError.message : String(baseError);
+      throw new Error(
+        `Execution workspace "${cwd}" is missing and cannot be restored because base workspace "${input.base.baseCwd}" is not a git checkout: ${reason}`,
+      );
+    });
   const branchName = asString(input.workspace.branchName, "").trim();
   if (!branchName) {
     throw new Error(`Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`);

@@ -1621,6 +1621,92 @@ describe("realizeExecutionWorkspace", () => {
     expect(actualHead).toBe(expectedHead);
   });
 
+  it("restores a missing persisted git worktree when continuation fallback cwd is not a git checkout", async () => {
+    const repoRoot = await createTempRepo();
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-453",
+        title: "Restore missing worktree from fallback cwd",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await fs.writeFile(path.join(initial.cwd, "continuation.txt"), "persisted continuation\n", "utf8");
+    await runGit(initial.cwd, ["add", "continuation.txt"]);
+    await runGit(initial.cwd, ["commit", "-m", "Persist continuation state"]);
+    const expectedHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: initial.cwd })).stdout.trim();
+
+    await fs.rm(initial.cwd, { recursive: true, force: true });
+
+    const fallbackRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-fallback-"));
+    const fallbackCwd = path.join(fallbackRoot, "agent-home");
+    await fs.mkdir(fallbackCwd, { recursive: true });
+    await fs.writeFile(path.join(fallbackCwd, "not-a-repo.txt"), "fallback\n", "utf8");
+
+    try {
+      const restored = await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: fallbackCwd,
+          source: "agent_home",
+          projectId: "project-1",
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: initial.cwd,
+          providerRef: initial.worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: initial.branchName,
+          config: null,
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-453",
+          title: "Restore missing worktree from fallback cwd",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+
+      expect(restored).not.toBeNull();
+      expect(restored?.cwd).toBe(initial.cwd);
+      await expect(fs.readFile(path.join(initial.cwd, "continuation.txt"), "utf8")).resolves.toBe("persisted continuation\n");
+      const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: initial.cwd })).stdout.trim();
+      expect(actualHead).toBe(expectedHead);
+    } finally {
+      await fs.rm(fallbackRoot, { recursive: true, force: true });
+    }
+  });
+
   it("reprovisions an existing persisted git worktree before manual control starts it", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
