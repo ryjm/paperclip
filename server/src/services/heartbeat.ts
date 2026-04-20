@@ -2862,6 +2862,42 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function countQueuedRunsForAgent(agentId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+    return Number(count ?? 0);
+  }
+
+  async function countActionableAssignedIssuesForAgent(companyId: string, agentId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, agentId),
+          inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+          isNull(issues.hiddenAt),
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
+  async function getLatestRunForAgent(agentId: string) {
+    return db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function shouldSuppressTimerWakeForAgent(agent: typeof agents.$inferSelect) {
     const assignedIssues = await db
       .select({
@@ -3105,14 +3141,19 @@ export function heartbeatService(db: Db) {
       nextStatus = "running";
       outcome = "reconciled_running";
     } else if (existing.status === "running") {
-      const [latestRun] = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.agentId, agentId))
-        .orderBy(desc(heartbeatRuns.createdAt))
-        .limit(1);
+      const latestRun = await getLatestRunForAgent(agentId);
       nextStatus = latestRun?.status === "failed" || latestRun?.status === "timed_out" ? "error" : "idle";
       outcome = nextStatus === "error" ? "reconciled_error" : "reconciled_idle";
+    } else if (existing.status === "error") {
+      const queuedCount = await countQueuedRunsForAgent(agentId);
+      const actionableIssueCount = await countActionableAssignedIssuesForAgent(existing.companyId, agentId);
+      if (queuedCount === 0 && actionableIssueCount === 0) {
+        const latestRun = await getLatestRunForAgent(agentId);
+        if (latestRun?.status === "failed" && latestRun.errorCode === "process_lost") {
+          nextStatus = "idle";
+          outcome = "reconciled_idle";
+        }
+      }
     }
 
     if (nextStatus === existing.status) return existing;
@@ -3143,6 +3184,27 @@ export function heartbeatService(db: Db) {
     }
 
     return updated ?? existing;
+  }
+
+  async function recoverIdleProcessLostAgents() {
+    const errorAgents = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.status, "error"));
+
+    const recoveredAgentIds: string[] = [];
+    for (const agent of errorAgents) {
+      const reconciled = await reconcileAgentStatus(agent.id);
+      if (reconciled?.status === "idle") {
+        recoveredAgentIds.push(agent.id);
+      }
+    }
+
+    return {
+      checked: errorAgents.length,
+      recovered: recoveredAgentIds.length,
+      agentIds: recoveredAgentIds,
+    };
   }
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
@@ -5759,6 +5821,8 @@ export function heartbeatService(db: Db) {
     resumeQueuedRuns,
 
     reconcileStrandedAssignedIssues,
+
+    recoverIdleProcessLostAgents,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

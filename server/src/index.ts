@@ -594,6 +594,10 @@ export async function startServer(): Promise<StartedServer> {
         ) {
           logger.warn({ ...reconciled }, "startup stranded-issue reconciliation changed assigned issue state");
         }
+        const recovered = await heartbeat.recoverIdleProcessLostAgents();
+        if (recovered.recovered > 0) {
+          logger.warn({ ...recovered }, "startup process_lost idle-agent recovery changed agent state");
+        }
       })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
@@ -634,6 +638,10 @@ export async function startServer(): Promise<StartedServer> {
             reconciled.escalated > 0
           ) {
             logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
+          }
+          const recovered = await heartbeat.recoverIdleProcessLostAgents();
+          if (recovered.recovered > 0) {
+            logger.warn({ ...recovered }, "periodic process_lost idle-agent recovery changed agent state");
           }
         })
         .catch((err) => {
