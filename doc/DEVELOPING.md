@@ -21,6 +21,7 @@ GitHub Actions owns `pnpm-lock.yaml`.
 
 - Do not commit `pnpm-lock.yaml` in pull requests.
 - Pull request CI validates dependency resolution when manifests change.
+- Pull request CI also refreshes a temporary lockfile in the workflow workspace before frozen installs, so manifest-only PRs stay reviewable without committing `pnpm-lock.yaml`.
 - Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
 
 ## Start Dev
