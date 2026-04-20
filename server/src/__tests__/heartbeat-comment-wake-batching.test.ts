@@ -589,7 +589,7 @@ describe("heartbeat comment wake batching", () => {
         .then((rows) => rows[0] ?? null);
 
       expect(reopenedIssue).toMatchObject({
-        status: "in_progress",
+        status: "todo",
         completedAt: null,
       });
 
@@ -603,7 +603,7 @@ describe("heartbeat comment wake batching", () => {
             id: issueId,
             identifier: `${issuePrefix}-1`,
             title: "Reopen after deferred comment",
-            status: "in_progress",
+            status: "todo",
             priority: "medium",
           },
         },
@@ -687,17 +687,17 @@ describe("heartbeat comment wake batching", () => {
             id: issueId,
             identifier: `${issuePrefix}-1`,
             title: "Require a comment",
-            status: "in_progress",
+            status: "todo",
             priority: "medium",
           },
-          checkedOutByHarness: true,
+          checkedOutByHarness: false,
           commentIds: [],
         },
       });
       expect(String(firstPayload.message ?? "")).toContain("## Paperclip Wake Payload");
       expect(String(firstPayload.message ?? "")).toContain("Do not switch to another issue until you have handled this wake.");
-      expect(String(firstPayload.message ?? "")).toContain("- checkout: already claimed by the harness for this run");
-      expect(String(firstPayload.message ?? "")).toContain(
+      expect(String(firstPayload.message ?? "")).not.toContain("- checkout: already claimed by the harness for this run");
+      expect(String(firstPayload.message ?? "")).not.toContain(
         "The harness already checked out this issue for the current run.",
       );
       expect(String(firstPayload.message ?? "")).toContain(`${issuePrefix}-1 Require a comment`);
@@ -711,8 +711,8 @@ describe("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       expect(checkedOutIssue).toMatchObject({
-        status: "in_progress",
-        checkoutRunId: firstRun?.id,
+        status: "todo",
+        checkoutRunId: null,
         executionRunId: firstRun?.id,
       });
       gateway.releaseFirstWait();
