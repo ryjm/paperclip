@@ -68,9 +68,9 @@ The optional `comment` field adds a comment in the same call.
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `projectId`, `goalId`, `parentId`, `billingCode`, `labelIds`, `hiddenAt`.
 
-`labelIds` controls issue classification. GitHub evidence is required on a `done` transition when either condition is true: the issue is labeled `code`, or it belongs to a project with a repo-connected workspace (`repoUrl` set). The latest completion comment must include a GitHub commit link or pull request link. Paperclip checks the PATCH comment first; if no comment is supplied in that request, it falls back to the current latest issue comment.
+`labelIds` controls issue classification. GitHub evidence is required on a `done` transition when the issue is labeled `code`. The latest completion comment must include a GitHub commit link or pull request link. Paperclip checks the PATCH comment first; if no comment is supplied in that request, it falls back to the current latest issue comment. Coordination-only issues can close without GitHub evidence when no repo change exists.
 
-Non-code issues outside repo-connected projects can close without GitHub evidence. If the task did not require repository changes, remove the `code` label before closing and ensure the issue is not attached to a repo-connected project. If the work changed repository files but traceability is still missing, leave the issue `in_progress` or mark it `blocked` until the latest comment includes the commit or PR URL.
+Issues without the `code` label can close without GitHub evidence when the work did not require repository changes. If the task ended up not requiring repo work, remove the `code` label before closing. If the work changed repository files but traceability is still missing, leave the issue `in_progress` or mark it `blocked` until the latest comment includes the commit or PR URL.
 
 If assignment is denied with `403 Missing permission: tasks:assign`, retry without assignee fields and use a parent-thread comment to route triage instead of blocking the run.
 

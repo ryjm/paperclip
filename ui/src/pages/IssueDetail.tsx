@@ -1803,7 +1803,7 @@ export function IssueDetail() {
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
-          GitHub evidence (commit or PR link in the latest comment) is required to close issues that have the <code>code</code> label or belong to a project with a repo-connected workspace. Non-code tasks outside repo projects can close without evidence.
+          GitHub evidence (commit or PR link in the latest comment) is required to close issues that have the <code>code</code> label. Coordination-only issues can close without evidence when no repo change exists.
         </p>
 
         <InlineEditor

@@ -52,16 +52,14 @@ describe("resolveDoneTransitionEvidenceComment", () => {
 });
 
 describe("buildDoneEvidenceRequiredErrorResponse", () => {
-  it("documents both enforcement signals and closeout fallbacks", () => {
+  it("documents the code-label enforcement signal and closeout fallbacks", () => {
     const payload = buildDoneEvidenceRequiredErrorResponse();
     expect(payload.error).toContain("code label");
-    expect(payload.error).toContain("repo-connected workspace");
     expect(payload.error).toContain("keep the issue open until traceability is available");
     expect(payload.details).toMatchObject({
       requiredLabel: "code",
       enforcedSignals: {
         codeLabel: expect.any(String),
-        projectRepoWorkspace: expect.any(String),
       },
       acceptedEvidence: {
         githubCommitUrl: "https://github.com/<owner>/<repo>/commit/<sha>",
@@ -69,8 +67,6 @@ describe("buildDoneEvidenceRequiredErrorResponse", () => {
       },
       fallback: {
         nonCode: "Remove the code label before marking done when the task did not require repository changes.",
-        projectBound:
-          "If the issue is in a repo-connected project but did not change files, move it to a non-repo project or remove the project association.",
       },
     });
   });
@@ -144,26 +140,11 @@ describe("issueRequiresDoneEvidence", () => {
     ).toBe(false);
   });
 
-  it("requires evidence for repo-connected project workspace when issue lacks code label", () => {
+  it("does not require evidence for non-code issues just because they are repo-adjacent", () => {
     expect(
       issueRequiresDoneEvidence({
         currentLabels: [{ id: "1", name: "ops" }],
-        repoConnectedProjectWorkspace: true,
       }),
-    ).toBe(true);
-  });
-
-  it("requires evidence for repo-connected project issues even when code label is removed", () => {
-    expect(
-      issueRequiresDoneEvidence({
-        currentLabels: [{ id: "2", name: "code" }],
-        nextLabelIds: ["1"],
-        companyLabels: [
-          { id: "1", name: "ops" },
-          { id: "2", name: "code" },
-        ],
-        repoConnectedProjectWorkspace: true,
-      }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
