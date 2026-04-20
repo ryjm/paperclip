@@ -232,6 +232,7 @@ export type {
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceCloseReadinessState,
+  LocalWorkspaceGitState,
   ProjectWorkspaceRuntimeConfig,
   WorkspaceCommandDefinition,
   WorkspaceCommandKind,

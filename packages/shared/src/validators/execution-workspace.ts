@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { localWorkspaceGitStateSchema } from "./workspace-git.js";
 
 export const executionWorkspaceStatusSchema = z.enum([
   "active",
@@ -54,17 +55,8 @@ export const executionWorkspaceCloseLinkedIssueSchema = z.object({
   isTerminal: z.boolean(),
 }).strict();
 
-export const executionWorkspaceCloseGitReadinessSchema = z.object({
-  repoRoot: z.string().nullable(),
-  workspacePath: z.string().nullable(),
-  branchName: z.string().nullable(),
+export const executionWorkspaceCloseGitReadinessSchema = localWorkspaceGitStateSchema.extend({
   baseRef: z.string().nullable(),
-  hasDirtyTrackedFiles: z.boolean(),
-  hasUntrackedFiles: z.boolean(),
-  dirtyEntryCount: z.number().int().nonnegative(),
-  untrackedEntryCount: z.number().int().nonnegative(),
-  aheadCount: z.number().int().nonnegative().nullable(),
-  behindCount: z.number().int().nonnegative().nullable(),
   isMergedIntoBase: z.boolean().nullable(),
   createdByRuntime: z.boolean(),
 }).strict();

@@ -21,6 +21,7 @@ function createProjectWorkspace(overrides: Partial<ProjectWorkspace>): ProjectWo
     sharedWorkspaceKey: overrides.sharedWorkspaceKey ?? null,
     metadata: overrides.metadata ?? null,
     runtimeConfig: overrides.runtimeConfig ?? null,
+    localGitState: overrides.localGitState ?? null,
     isPrimary: overrides.isPrimary ?? false,
     runtimeServices: overrides.runtimeServices ?? [],
     createdAt: overrides.createdAt ?? new Date("2026-03-20T00:00:00Z"),
@@ -158,7 +159,9 @@ describe("buildProjectWorkspaceSummaries", () => {
       kind: "execution_workspace",
       workspaceName: "PAP-893",
       branchName: "PAP-893-workspaces-tab",
+      trackingRef: "public-gh/master",
       executionWorkspaceId: "exec-1",
+      localGitState: null,
     });
     expect(summaries[0]?.issues.map((issue) => issue.id)).toEqual(["issue-exec"]);
 
@@ -167,7 +170,9 @@ describe("buildProjectWorkspaceSummaries", () => {
       kind: "project_workspace",
       workspaceName: "feature-checkout",
       branchName: "feature/workspaces",
+      trackingRef: "feature/workspaces",
       projectWorkspaceId: "workspace-feature",
+      localGitState: null,
     });
     expect(summaries[1]?.issues.map((issue) => issue.id)).toEqual([
       "issue-feature-newer",
