@@ -1,4 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { parse as parseDotenv } from "dotenv";
+import { resolvePaperclipEnvPath } from "./paths.js";
 
 interface JwtHeader {
   alg: string;
@@ -25,8 +28,71 @@ function parseNumber(value: string | undefined, fallback: number) {
   return Math.floor(parsed);
 }
 
+type EnvFileSecretCache = { path: string; mtimeMs: number; secret: string | null };
+let envFileSecretCache: EnvFileSecretCache | null = null;
+
+function readJwtSecretFromEnvFile(): string | null {
+  let envPath: string;
+  try {
+    envPath = resolvePaperclipEnvPath();
+  } catch {
+    return null;
+  }
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(envPath).mtimeMs;
+  } catch {
+    envFileSecretCache = null;
+    return null;
+  }
+  if (
+    envFileSecretCache
+    && envFileSecretCache.path === envPath
+    && envFileSecretCache.mtimeMs === mtimeMs
+  ) {
+    return envFileSecretCache.secret;
+  }
+  let parsed: Record<string, string> = {};
+  try {
+    parsed = parseDotenv(readFileSync(envPath));
+  } catch {
+    parsed = {};
+  }
+  const secret =
+    parsed.PAPERCLIP_AGENT_JWT_SECRET?.trim()
+    || parsed.BETTER_AUTH_SECRET?.trim()
+    || null;
+  envFileSecretCache = { path: envPath, mtimeMs, secret };
+  return secret;
+}
+
+export function describeLocalAgentJwtSecretSources(): {
+  envVarPresent: Record<"PAPERCLIP_AGENT_JWT_SECRET" | "BETTER_AUTH_SECRET", boolean>;
+  envFilePath: string | null;
+  envFileHasSecret: boolean;
+} {
+  let envFilePath: string | null = null;
+  try {
+    envFilePath = resolvePaperclipEnvPath();
+  } catch {
+    envFilePath = null;
+  }
+  const envFileSecret = readJwtSecretFromEnvFile();
+  return {
+    envVarPresent: {
+      PAPERCLIP_AGENT_JWT_SECRET: Boolean(process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()),
+      BETTER_AUTH_SECRET: Boolean(process.env.BETTER_AUTH_SECRET?.trim()),
+    },
+    envFilePath,
+    envFileHasSecret: Boolean(envFileSecret),
+  };
+}
+
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+  const secret =
+    process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()
+    || process.env.BETTER_AUTH_SECRET?.trim()
+    || readJwtSecretFromEnvFile();
   if (!secret) return null;
 
   return {
