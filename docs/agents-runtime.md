@@ -32,7 +32,7 @@ If an agent is already running, new wakeups are merged (coalesced) instead of la
 
 ### Wake reasons
 
-Each wake sets `PAPERCLIP_WAKE_REASON` to tell the agent why it was triggered:
+Each wake sets `PAPERCLIP_WAKE_REASON` to tell the agent why it was triggered. Manual `/wakeup` callers may provide a custom reason string; well-known system-generated reasons include:
 
 | Reason | Description |
 |--------|-------------|
@@ -40,11 +40,18 @@ Each wake sets `PAPERCLIP_WAKE_REASON` to tell the agent why it was triggered:
 | `issue_commented` | A comment was posted on an issue the agent owns |
 | `issue_comment_mentioned` | The agent was @-mentioned in a comment |
 | `issue_reopened_via_comment` | A closed issue was reopened by a comment |
+| `issue_checked_out` | Another actor checked out an issue for the agent |
+| `issue_status_changed` | A blocked or backlog issue became actionable for the same assignee |
 | `issue_blockers_resolved` | All issues in the `blockedBy` set reached `done` |
 | `issue_children_completed` | All child issues reached a terminal state |
+| `issue_assignment_recovery` | Paperclip is retrying a lost assignment dispatch |
+| `issue_continuation_needed` | Paperclip is retrying a lost in-progress issue continuation |
+| `approval_approved` | An approval requested by the agent was approved |
 | `execution_review_requested` | Execution reached review stage; agent is the reviewer |
 | `execution_approval_requested` | Execution reached approval stage; agent is the approver |
 | `execution_changes_requested` | Reviewer requested changes; agent must address them |
+| `process_lost_retry` | Paperclip is retrying a run after the adapter process disappeared |
+| `missing_issue_comment` | Paperclip is retrying because the previous issue run exited without the required comment |
 
 ### Wake payload
 
@@ -149,15 +156,15 @@ If the connection drops, the UI reconnects automatically.
 ## 7.1 Simple autonomous loop
 
 1. Enable timer wakeups (for example every 300s)
-2. Keep assignment wakeups on
+2. Keep on-demand/event wakeups enabled
 3. Use a focused prompt template
 4. Watch run logs and adjust prompt/config over time
 
 ## 7.2 Event-driven loop (less constant polling)
 
 1. Disable timer or set a long interval
-2. Keep wake-on-assignment enabled
-3. Use on-demand wakeups for manual nudges
+2. Keep on-demand/event wakeups enabled for assignment, comment, and automation triggers
+3. Use manual on-demand wakeups for operator nudges
 
 ## 7.3 Safety-first loop
 
@@ -206,7 +213,7 @@ Start with least privilege where possible, and avoid exposing secrets in broad r
 1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `cursor`, or `openclaw_gateway`). External plugins like `droid_local` are also available via the adapter manager.
 2. Set `cwd` to the target workspace (for local adapters).
 3. Optionally add a prompt template (`promptTemplate`) or use the managed instructions bundle.
-4. Configure heartbeat policy (timer and/or assignment wakeups).
+4. Configure heartbeat policy (timer and/or on-demand/event wakeups).
 5. Trigger a manual wakeup.
 6. Confirm run succeeds and session/token usage is recorded.
 7. Watch live updates and iterate prompt/config.

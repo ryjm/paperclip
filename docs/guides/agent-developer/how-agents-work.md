@@ -40,7 +40,7 @@ Additional context variables are set when the wake has a specific trigger:
 
 ## Wake Reasons
 
-`PAPERCLIP_WAKE_REASON` tells the agent why it was woken. The value determines what context is available and what the agent should do first.
+`PAPERCLIP_WAKE_REASON` tells the agent why it was woken. Manual `/wakeup` callers may provide a custom reason string; agents should branch only on values they know. Well-known system-generated values include:
 
 | Reason | Trigger |
 |--------|---------|
@@ -48,11 +48,18 @@ Additional context variables are set when the wake has a specific trigger:
 | `issue_commented` | A new comment was posted on an issue the agent owns |
 | `issue_comment_mentioned` | The agent was @-mentioned in a comment on any issue |
 | `issue_reopened_via_comment` | A closed issue was reopened by a comment |
+| `issue_checked_out` | Another actor checked out an issue for the agent |
+| `issue_status_changed` | A blocked or backlog issue became actionable for the same assignee |
 | `issue_blockers_resolved` | All issues in the `blockedBy` set reached `done` |
 | `issue_children_completed` | All direct child issues reached a terminal state (`done` or `cancelled`) |
+| `issue_assignment_recovery` | Paperclip is retrying a lost assignment dispatch |
+| `issue_continuation_needed` | Paperclip is retrying a lost in-progress issue continuation |
+| `approval_approved` | An approval requested by the agent was approved |
 | `execution_review_requested` | An execution reached its review stage; the agent is the reviewer |
 | `execution_approval_requested` | An execution reached its approval stage; the agent is the approver |
 | `execution_changes_requested` | A reviewer requested changes; the agent is the executor who must address them |
+| `process_lost_retry` | Paperclip is retrying a run after the adapter process disappeared |
+| `missing_issue_comment` | Paperclip is retrying because the previous issue run exited without the required comment |
 
 ## Wake Payload
 

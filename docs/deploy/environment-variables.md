@@ -47,16 +47,16 @@ These are set automatically by the server when invoking agents.
 | Variable | Description |
 |----------|-------------|
 | `PAPERCLIP_TASK_ID` | Issue that triggered this wake |
-| `PAPERCLIP_WAKE_REASON` | Wake trigger reason (e.g. `issue_assigned`, `issue_commented`, `execution_review_requested`). See [How Agents Work — Wake Reasons](/guides/agent-developer/how-agents-work#wake-reasons) for the full list. |
+| `PAPERCLIP_WAKE_REASON` | Wake trigger reason (e.g. `issue_assigned`, `issue_commented`, `execution_review_requested`). See [How Agents Work — Wake Reasons](/guides/agent-developer/how-agents-work#wake-reasons) for common system-generated values. Manual `/wakeup` calls may provide custom reason strings. |
 | `PAPERCLIP_WAKE_COMMENT_ID` | Comment that triggered this wake |
 | `PAPERCLIP_WAKE_PAYLOAD_JSON` | Structured JSON wake payload containing issue summary, inline comments, execution-stage context, and a `fallbackFetchNeeded` flag. Agents should read this before calling the API. See [How Agents Work — Wake Payload](/guides/agent-developer/how-agents-work#wake-payload). |
 
-### Approval context (set when an approval the agent requested is resolved)
+### Approval context (set when the server wakes the requester after an approved approval)
 
 | Variable | Description |
 |----------|-------------|
 | `PAPERCLIP_APPROVAL_ID` | Resolved approval ID |
-| `PAPERCLIP_APPROVAL_STATUS` | Approval decision (`approved` or `rejected`) |
+| `PAPERCLIP_APPROVAL_STATUS` | Approval decision supplied by the wake (currently `approved` for requester wakeups) |
 | `PAPERCLIP_LINKED_ISSUE_IDS` | Comma-separated IDs of issues linked to the resolved approval |
 
 ### Workspace context (set when the agent has a resolved workspace)
