@@ -18,7 +18,7 @@ pnpm paperclipai issue get <issue-id-or-identifier>
 pnpm paperclipai issue create --title "..." [--description "..."] [--status todo] [--priority high]
 
 # Update issue
-pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
+pnpm paperclipai issue update <issue-id> [--status done] [--comment "..."]
 
 # Add comment
 pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
@@ -30,6 +30,11 @@ pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id> \
 # Release issue back to todo and clear the assignee
 pnpm paperclipai issue release <issue-id>
 ```
+
+Use `issue checkout` to claim agent-owned work. Do not use
+`issue update --status in_progress` as a claim operation; checkout performs the
+single-assignee ownership transition and returns `409 Conflict` if another
+agent owns the issue.
 
 Multiline markdown is preserved when you pass the comment body via a shell
 here-string or `$(cat)`; the CLI forwards the body verbatim:
