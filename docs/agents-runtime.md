@@ -76,13 +76,15 @@ For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes
 
 ## 3.2 Runtime behavior
 
-In agent runtime settings, configure heartbeat policy:
+In agent runtime settings, configure the run policy:
 
-- `enabled`: allow scheduled heartbeats
+- `enabled`: allow scheduled timer heartbeats
 - `intervalSec`: timer interval (0 = disabled)
-- `wakeOnAssignment`: wake when assigned work
-- `wakeOnOnDemand`: allow ping-style on-demand wakeups
-- `wakeOnAutomation`: allow system automation wakeups
+- `wakeOnDemand`: allow assignment, UI/API, and automation wakeups
+- `cooldownSec`: minimum cooldown between accepted wakeups
+- `maxConcurrentRuns`: maximum heartbeat runs that can execute at once
+
+Older imported configs may still contain `wakeOnAssignment`, `wakeOnOnDemand`, or `wakeOnAutomation`; Paperclip treats those as compatibility aliases when `wakeOnDemand` is absent.
 
 ## 3.3 Working directory and execution limits
 
