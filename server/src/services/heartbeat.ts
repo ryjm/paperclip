@@ -100,6 +100,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "codex_local",
   "cursor",
   "gemini_local",
+  "hermes_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -637,6 +638,7 @@ export function getTimerWakeSuppressionStateKey(
     .sort()
     .join("|");
 }
+
 
 export function summarizeHeartbeatRunContextSnapshot(
   contextSnapshot: Record<string, unknown> | null | undefined,
@@ -4339,8 +4341,10 @@ export function heartbeatService(db: Db) {
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
+        const authError =
+          "local adapter requires agent JWT auth, but PAPERCLIP_AGENT_JWT_SECRET/BETTER_AUTH_SECRET could not be resolved from the server environment or the current Paperclip .env file";
         const secretSources = describeLocalAgentJwtSecretSources();
-        logger.warn(
+        logger.error(
           {
             companyId: agent.companyId,
             agentId: agent.id,
@@ -4348,8 +4352,10 @@ export function heartbeatService(db: Db) {
             adapterType: agent.adapterType,
             secretSources,
           },
-          "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
+          authError,
         );
+        await onLog("stderr", `[paperclip] ${authError}\n`);
+        throw new Error(authError);
       }
       const adapterResult = await adapter.execute({
         runId: run.id,

@@ -21,6 +21,15 @@ export interface LocalAgentJwtClaims {
 }
 
 const JWT_ALGORITHM = "HS256";
+const STARTUP_PAPERCLIP_ENV_FILE_PATH = resolveStartupPaperclipEnvPath();
+
+function resolveStartupPaperclipEnvPath(): string | null {
+  try {
+    return resolvePaperclipEnvPath();
+  } catch {
+    return null;
+  }
+}
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
@@ -28,23 +37,26 @@ function parseNumber(value: string | undefined, fallback: number) {
   return Math.floor(parsed);
 }
 
+function readTrimmedEnvValue(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 type EnvFileSecretCache = { path: string; mtimeMs: number; secret: string | null };
 let envFileSecretCache: EnvFileSecretCache | null = null;
 
 function readJwtSecretFromEnvFile(): string | null {
-  let envPath: string;
-  try {
-    envPath = resolvePaperclipEnvPath();
-  } catch {
-    return null;
-  }
+  const envPath = STARTUP_PAPERCLIP_ENV_FILE_PATH;
+  if (!envPath) return null;
+
   let mtimeMs: number;
   try {
     mtimeMs = statSync(envPath).mtimeMs;
   } catch {
-    envFileSecretCache = null;
+    if (envFileSecretCache?.path === envPath) envFileSecretCache = null;
     return null;
   }
+
   if (
     envFileSecretCache
     && envFileSecretCache.path === envPath
@@ -52,16 +64,17 @@ function readJwtSecretFromEnvFile(): string | null {
   ) {
     return envFileSecretCache.secret;
   }
+
   let parsed: Record<string, string> = {};
   try {
-    parsed = parseDotenv(readFileSync(envPath));
+    parsed = parseDotenv(readFileSync(envPath, "utf8"));
   } catch {
     parsed = {};
   }
+
   const secret =
-    parsed.PAPERCLIP_AGENT_JWT_SECRET?.trim()
-    || parsed.BETTER_AUTH_SECRET?.trim()
-    || null;
+    readTrimmedEnvValue(parsed.PAPERCLIP_AGENT_JWT_SECRET)
+    ?? readTrimmedEnvValue(parsed.BETTER_AUTH_SECRET);
   envFileSecretCache = { path: envPath, mtimeMs, secret };
   return secret;
 }
@@ -71,28 +84,22 @@ export function describeLocalAgentJwtSecretSources(): {
   envFilePath: string | null;
   envFileHasSecret: boolean;
 } {
-  let envFilePath: string | null = null;
-  try {
-    envFilePath = resolvePaperclipEnvPath();
-  } catch {
-    envFilePath = null;
-  }
   const envFileSecret = readJwtSecretFromEnvFile();
   return {
     envVarPresent: {
-      PAPERCLIP_AGENT_JWT_SECRET: Boolean(process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()),
-      BETTER_AUTH_SECRET: Boolean(process.env.BETTER_AUTH_SECRET?.trim()),
+      PAPERCLIP_AGENT_JWT_SECRET: Boolean(readTrimmedEnvValue(process.env.PAPERCLIP_AGENT_JWT_SECRET)),
+      BETTER_AUTH_SECRET: Boolean(readTrimmedEnvValue(process.env.BETTER_AUTH_SECRET)),
     },
-    envFilePath,
+    envFilePath: STARTUP_PAPERCLIP_ENV_FILE_PATH,
     envFileHasSecret: Boolean(envFileSecret),
   };
 }
 
 function jwtConfig() {
   const secret =
-    process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()
-    || process.env.BETTER_AUTH_SECRET?.trim()
-    || readJwtSecretFromEnvFile();
+    readTrimmedEnvValue(process.env.PAPERCLIP_AGENT_JWT_SECRET)
+    ?? readTrimmedEnvValue(process.env.BETTER_AUTH_SECRET)
+    ?? readJwtSecretFromEnvFile();
   if (!secret) return null;
 
   return {
@@ -147,7 +154,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
     aud: config.audience,
   };
 
-  const header = {
+  const header: JwtHeader = {
     alg: JWT_ALGORITHM,
     typ: "JWT",
   };
