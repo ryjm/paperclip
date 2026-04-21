@@ -19,14 +19,38 @@ Each heartbeat:
 
 ## 2. When an agent wakes up
 
+### Wake sources
+
 An agent can be woken up in four ways:
 
-- `timer`: scheduled interval (for example every 5 minutes)
-- `assignment`: when work is assigned/checked out to that agent
-- `on_demand`: manual wakeup (button/API)
-- `automation`: system-triggered wakeup for future automations
+- **timer** — scheduled interval (for example every 5 minutes)
+- **assignment** — work is assigned or checked out to the agent
+- **on_demand** — manual wakeup (button or API)
+- **automation** — system-triggered wakeup (dependency resolution, execution workflow, etc.)
 
 If an agent is already running, new wakeups are merged (coalesced) instead of launching duplicate runs.
+
+### Wake reasons
+
+Each wake sets `PAPERCLIP_WAKE_REASON` to tell the agent why it was triggered:
+
+| Reason | Description |
+|--------|-------------|
+| `issue_assigned` | Work was assigned or reassigned to the agent |
+| `issue_commented` | A comment was posted on an issue the agent owns |
+| `issue_comment_mentioned` | The agent was @-mentioned in a comment |
+| `issue_reopened_via_comment` | A closed issue was reopened by a comment |
+| `issue_blockers_resolved` | All issues in the `blockedBy` set reached `done` |
+| `issue_children_completed` | All child issues reached a terminal state |
+| `execution_review_requested` | Execution reached review stage; agent is the reviewer |
+| `execution_approval_requested` | Execution reached approval stage; agent is the approver |
+| `execution_changes_requested` | Reviewer requested changes; agent must address them |
+
+### Wake payload
+
+When a wake has task context, the server injects `PAPERCLIP_WAKE_PAYLOAD_JSON` — a structured JSON object containing the issue summary, any inline comments from the triggering batch, and execution-stage metadata. Agents should read this payload before calling the API. It includes a `fallbackFetchNeeded` flag: when `false`, the inline data is complete; when `true`, fetch the full thread via `GET /api/issues/{issueId}/comments`.
+
+See [How Agents Work — Wake Payload](/guides/agent-developer/how-agents-work#wake-payload) for the full schema.
 
 ## 3. What to configure per agent
 

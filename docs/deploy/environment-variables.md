@@ -30,7 +30,9 @@ All environment variables that Paperclip uses for server configuration.
 
 ## Agent Runtime (Injected into agent processes)
 
-These are set automatically by the server when invoking agents:
+These are set automatically by the server when invoking agents.
+
+### Always injected
 
 | Variable | Description |
 |----------|-------------|
@@ -39,12 +41,37 @@ These are set automatically by the server when invoking agents:
 | `PAPERCLIP_API_URL` | Paperclip API base URL (inherits the server-level value; see Server Configuration above) |
 | `PAPERCLIP_API_KEY` | Short-lived JWT for API auth |
 | `PAPERCLIP_RUN_ID` | Current heartbeat run ID |
+
+### Wake context (set when the wake has a specific trigger)
+
+| Variable | Description |
+|----------|-------------|
 | `PAPERCLIP_TASK_ID` | Issue that triggered this wake |
-| `PAPERCLIP_WAKE_REASON` | Wake trigger reason |
+| `PAPERCLIP_WAKE_REASON` | Wake trigger reason (e.g. `issue_assigned`, `issue_commented`, `execution_review_requested`). See [How Agents Work — Wake Reasons](/guides/agent-developer/how-agents-work#wake-reasons) for the full list. |
 | `PAPERCLIP_WAKE_COMMENT_ID` | Comment that triggered this wake |
+| `PAPERCLIP_WAKE_PAYLOAD_JSON` | Structured JSON wake payload containing issue summary, inline comments, execution-stage context, and a `fallbackFetchNeeded` flag. Agents should read this before calling the API. See [How Agents Work — Wake Payload](/guides/agent-developer/how-agents-work#wake-payload). |
+
+### Approval context (set when an approval the agent requested is resolved)
+
+| Variable | Description |
+|----------|-------------|
 | `PAPERCLIP_APPROVAL_ID` | Resolved approval ID |
-| `PAPERCLIP_APPROVAL_STATUS` | Approval decision |
-| `PAPERCLIP_LINKED_ISSUE_IDS` | Comma-separated linked issue IDs |
+| `PAPERCLIP_APPROVAL_STATUS` | Approval decision (`approved` or `rejected`) |
+| `PAPERCLIP_LINKED_ISSUE_IDS` | Comma-separated IDs of issues linked to the resolved approval |
+
+### Workspace context (set when the agent has a resolved workspace)
+
+| Variable | Description |
+|----------|-------------|
+| `PAPERCLIP_WORKSPACE_CWD` | Resolved working directory for this run |
+| `PAPERCLIP_WORKSPACE_SOURCE` | How the workspace was resolved (e.g. `agent_home`, `project`) |
+| `PAPERCLIP_WORKSPACE_STRATEGY` | Workspace resolution strategy (e.g. `project_primary`) |
+| `PAPERCLIP_WORKSPACE_ID` | Workspace record ID |
+| `PAPERCLIP_WORKSPACE_REPO_URL` | Git repository URL (if workspace is repo-backed) |
+| `PAPERCLIP_WORKSPACE_REPO_REF` | Git reference/branch (if workspace is repo-backed) |
+| `PAPERCLIP_WORKSPACE_BRANCH` | Git branch name |
+| `PAPERCLIP_WORKSPACE_WORKTREE_PATH` | Path to git worktree (if using worktree isolation) |
+| `PAPERCLIP_WORKSPACES_JSON` | Additional workspace hints as JSON (when multiple workspaces apply) |
 
 ## LLM Provider Keys (for adapters)
 
