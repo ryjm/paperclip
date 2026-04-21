@@ -4,6 +4,16 @@
 
 Agents are the employees of a Paperclip company. Each agent has an adapter type (`claude_local`, `codex_local`, `process`, `http`) that determines how it runs, a position in the org chart (who it reports to), a heartbeat policy (how/when it wakes up), and a budget. The UI at `/agents` needs to support creating and configuring agents, viewing their org hierarchy, and inspecting what they've been doing -- their run history, live logs, and accumulated costs.
 
+This document mixes product intent with current implementation reality. Sections that describe "should" behavior are product intent; the notes below are the implemented API/UI contract that new work must preserve unless it intentionally migrates the product.
+
+Current implementation notes:
+
+- Run policy is stored in `runtimeConfig.heartbeat`. The current form labels this section "Run Policy" and exposes timer heartbeat controls plus advanced wake controls.
+- New agents default timer heartbeats off (`heartbeat.enabled: false`, `intervalSec: 300`). Edit mode reads existing `runtimeConfig.heartbeat` and treats missing `wakeOnDemand` as enabled.
+- The current UI exposes `heartbeat.enabled`, `heartbeat.intervalSec`, `heartbeat.wakeOnDemand`, `heartbeat.cooldownSec`, and `heartbeat.maxConcurrentRuns`. Imported or older configs may still contain legacy aliases such as `wakeOnAssignment`, `wakeOnAutomation`, and `wakeOnOnDemand`; those are compatibility data, not separate first-class controls in the current form.
+- The canonical rich wake endpoint is `POST /agents/:id/wakeup`. The older `POST /agents/:id/heartbeat/invoke` route still exists as a minimal on-demand compatibility path, but new docs and workflows should prefer `/wakeup` when a reason, payload, idempotency key, retry, or resume context is needed.
+- Issue properties now surface execution review/approval state and blocker relations. Agent activity UI should treat those as part of the visible execution lifecycle when linking runs back to issue work.
+
 This spec covers three surfaces:
 
 1. **Agent Creation Dialog** -- the "New Agent" flow
@@ -80,12 +90,13 @@ Follows the existing `NewIssueDialog` / `NewProjectDialog` pattern: a `Dialog` c
 
 | Field | Control | Default |
 |-------|---------|---------|
-| Enabled | Toggle | true |
+| Heartbeat on interval | Toggle + number input | off for new agents; existing value for edits |
 | Interval (sec) | Number input | 300 |
-| Wake on Assignment | Toggle | true |
-| Wake on On-Demand | Toggle | true |
-| Wake on Automation | Toggle | true |
+| Wake on demand | Toggle | true |
 | Cooldown (sec) | Number input | 10 |
+| Max concurrent runs | Number input | 1 |
+
+`Wake on demand` maps to `runtimeConfig.heartbeat.wakeOnDemand` and covers assignment wakes, UI/API manual wakes, and automation-initiated wakes in the current app model. Legacy config aliases (`wakeOnAssignment`, `wakeOnAutomation`, `wakeOnOnDemand`) may be preserved when present but should not be shown as independent toggles unless the runtime policy is split again.
 
 ### Behavior
 
@@ -133,7 +144,7 @@ Editable form with the same sections as the creation dialog (Adapter, Runtime, H
 Sections:
 - **Identity**: name, title, role, reports to, capabilities
 - **Adapter Config**: all adapter-specific fields for the current adapter type
-- **Heartbeat Policy**: enable/disable, interval, wake-on triggers, cooldown
+- **Run Policy**: timer heartbeat enable/disable, interval, `wakeOnDemand`, cooldown, max concurrent runs
 - **Runtime**: context mode, budget, timeout, grace, env vars, extra args
 
 Each section is a collapsible card. Save happens per-field (PATCH on blur/enter), not a single form submit. Validation errors show inline.
@@ -165,6 +176,7 @@ Fields per row:
 - Cost breakdown
 - Error message and error code (if failed)
 - Exit code and signal (if applicable)
+- Process-loss recovery state when user-visible: a failed run with `errorCode: process_lost` shows a Resume action that calls `/agents/:id/wakeup` with `reason: resume_process_lost_run` and `payload.resumeFromRunId`. Generic failed/timed_out runs show Retry. Retry chains should surface `retryOfRunId` and `processLossRetryCount` when present.
 
 **Log viewer** within the run detail:
 - Streams `heartbeat_run_events` for the run, ordered by `seq`
@@ -178,6 +190,13 @@ Fields per row:
 #### Issues Tab
 
 Keep as-is: list of issues assigned to this agent with status, clickable to navigate to issue detail.
+
+When a run is tied to an issue, the issue-side UI may also show:
+
+- Active execution run state (`queued` or `running`) via issue live-run/active-run queries
+- Execution review/approval policy: reviewers, approvers, "Run review now", "Run approval now"
+- Current execution state: review pending, approval pending, or changes requested with the current participant
+- Blocker controls: `blockedBy` relations selected from other issues and `blocks` summaries for issues this issue blocks
 
 #### Costs Tab
 
@@ -251,7 +270,7 @@ Reused existing components:
 
 ## 5. API Surface
 
-All endpoints already exist. No new server work needed for V1.
+This table records the current API reality for the agent activity/configuration surfaces. No new server work is required for this docs correction, but stale route names should not be copied into new implementation work.
 
 | Action | Endpoint | Used by |
 |--------|----------|---------|
@@ -263,11 +282,16 @@ All endpoints already exist. No new server work needed for V1.
 | Reset session | `POST /agents/:id/runtime-state/reset-session` | Overflow menu |
 | Create API key | `POST /agents/:id/keys` | Overflow menu |
 | Get runtime state | `GET /agents/:id/runtime-state` | Overview tab, properties panel |
-| Invoke/Wakeup | `POST /agents/:id/heartbeat/invoke` | Header invoke button |
+| Wakeup | `POST /agents/:id/wakeup` | Canonical manual wake, retry, resume, and automation wake path |
+| Legacy invoke | `POST /agents/:id/heartbeat/invoke` | Minimal on-demand compatibility path; avoid for new reason/payload/idempotency workflows |
 | List runs | `GET /companies/:id/heartbeat-runs?agentId=X` | Runs tab |
+| List live company runs | `GET /companies/:id/live-runs` | Agents list, dashboard, active indicators |
+| List issue live runs | `GET /issues/:issueId/live-runs` | Issue execution widgets |
+| Get issue active run | `GET /issues/:issueId/active-run` | Issue execution widgets |
 | Cancel run | `POST /heartbeat-runs/:id/cancel` | Run detail |
 | Run events | `GET /heartbeat-runs/:id/events` | Log viewer |
 | Run log | `GET /heartbeat-runs/:id/log` | Full log view |
+| Run workspace operations | `GET /heartbeat-runs/:id/workspace-operations` | Run detail workspace operation logs |
 
 ---
 
