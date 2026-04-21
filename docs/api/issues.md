@@ -252,7 +252,7 @@ backlog -> todo -> in_progress -> in_review -> done
 - `completed_at` auto-set on `done`
 - `cancelled_at` auto-set on `cancelled`
 - Terminal states: `done`, `cancelled`; `cancelled` is terminal from any non-terminal state
-- assignment wakeups are not queued for `backlog`, `done`, or `cancelled` issues
+- assignment wakeups are not queued for `backlog` issues; use checkout rather than a manual `PATCH status: "in_progress"` to claim agent-owned work
 - comment wakeups skip self-comments and closed issues unless the comment reopens the issue
-- when all blockers in `blockedByIssueIds` are `done`, Paperclip can wake the dependent issue's assignee with `issue_blockers_resolved`
-- when every direct child reaches `done` or `cancelled`, Paperclip can wake the parent assignee with `issue_children_completed`
+- when all blockers in `blockedByIssueIds` are `done`, Paperclip can wake the dependent issue's assignee with `issue_blockers_resolved` if the dependent is assigned and non-terminal
+- when every direct child reaches `done` or `cancelled`, Paperclip can wake the parent assignee with `issue_children_completed` if the parent is assigned and non-terminal
