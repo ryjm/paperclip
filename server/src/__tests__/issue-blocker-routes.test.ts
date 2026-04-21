@@ -97,6 +97,7 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
 
     const detailRes = await request(app).get(`/api/issues/${blocked.identifier}`);
     expect(detailRes.status).toBe(200);
+    expect(detailRes.headers["cache-control"]).toBe("no-store");
     expect(detailRes.body.blockedBy).toEqual([
       expect.objectContaining({
         id: blocker.id,
@@ -111,6 +112,7 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
 
     const heartbeatRes = await request(app).get(`/api/issues/${blocked.identifier}/heartbeat-context`);
     expect(heartbeatRes.status).toBe(200);
+    expect(heartbeatRes.headers["cache-control"]).toBe("no-store");
     expect(heartbeatRes.body.issue).toEqual(
       expect.objectContaining({
         id: blocked.id,
@@ -139,6 +141,26 @@ describeEmbeddedPostgres("issue blocker-aware routes", () => {
     expect(patchRes.body.comment).toEqual(
       expect.objectContaining({
         body: "PATCH route still works with blocker metadata present.",
+      }),
+    );
+
+    const detailAfterPatchRes = await request(app).get(`/api/issues/${blocked.id}`);
+    expect(detailAfterPatchRes.status).toBe(200);
+    expect(detailAfterPatchRes.headers["cache-control"]).toBe("no-store");
+    expect(detailAfterPatchRes.body.blockedBy).toEqual([
+      expect.objectContaining({
+        id: blocker.id,
+        identifier: blocker.identifier,
+      }),
+    ]);
+
+    const heartbeatAfterPatchRes = await request(app).get(`/api/issues/${blocked.id}/heartbeat-context`);
+    expect(heartbeatAfterPatchRes.status).toBe(200);
+    expect(heartbeatAfterPatchRes.headers["cache-control"]).toBe("no-store");
+    expect(heartbeatAfterPatchRes.body.issue).toEqual(
+      expect.objectContaining({
+        id: blocked.id,
+        identifier: blocked.identifier,
       }),
     );
 

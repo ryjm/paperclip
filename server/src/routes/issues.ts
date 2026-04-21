@@ -927,6 +927,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    res.setHeader("Cache-Control", "no-store");
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
@@ -966,6 +967,7 @@ export function issueRoutes(
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
     ]);
 
+    res.setHeader("Cache-Control", "no-store");
     res.json({
       issue: {
         id: issue.id,
