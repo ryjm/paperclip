@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -26,6 +26,7 @@ describeEmbeddedPostgres("heartbeat agent status reconciliation", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -38,11 +39,12 @@ describeEmbeddedPostgres("heartbeat agent status reconciliation", () => {
   async function seedAgent(status: string) {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -58,13 +60,14 @@ describeEmbeddedPostgres("heartbeat agent status reconciliation", () => {
       permissions: {},
     });
 
-    return { companyId, agentId };
+    return { companyId, agentId, issuePrefix };
   }
 
   async function insertRun(input: {
     companyId: string;
     agentId: string;
     status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
+    errorCode?: string | null;
   }) {
     const now = new Date("2026-04-16T19:45:00.000Z");
     await db.insert(heartbeatRuns).values({
@@ -74,9 +77,28 @@ describeEmbeddedPostgres("heartbeat agent status reconciliation", () => {
       invocationSource: "assignment",
       triggerDetail: "test",
       status: input.status,
+      errorCode: input.errorCode ?? null,
       startedAt: now,
       finishedAt: input.status === "queued" || input.status === "running" ? null : now,
       updatedAt: now,
+    });
+  }
+
+  async function insertIssue(input: {
+    companyId: string;
+    issuePrefix: string;
+    agentId: string;
+    status: "todo" | "in_progress" | "in_review" | "blocked";
+  }) {
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId: input.companyId,
+      title: "Actionable assigned work",
+      status: input.status,
+      priority: "medium",
+      assigneeAgentId: input.agentId,
+      issueNumber: 1,
+      identifier: `${input.issuePrefix}-1`,
     });
   }
 
@@ -105,5 +127,48 @@ describeEmbeddedPostgres("heartbeat agent status reconciliation", () => {
     const reconciled = await heartbeatService(db).reconcileAgentStatus(agentId);
 
     expect(reconciled?.status).toBe("running");
+  });
+
+  it("recovers error agents stranded by an idle process_lost failure", async () => {
+    const { companyId, agentId } = await seedAgent("error");
+    await insertRun({ companyId, agentId, status: "failed", errorCode: "process_lost" });
+
+    const reconciled = await heartbeatService(db).reconcileAgentStatus(agentId);
+
+    expect(reconciled?.status).toBe("idle");
+  });
+
+  it("keeps error agents in error when a queued retry still exists", async () => {
+    const { companyId, agentId } = await seedAgent("error");
+    await insertRun({ companyId, agentId, status: "failed", errorCode: "process_lost" });
+    await insertRun({ companyId, agentId, status: "queued" });
+
+    const reconciled = await heartbeatService(db).reconcileAgentStatus(agentId);
+
+    expect(reconciled?.status).toBe("error");
+  });
+
+  it("keeps error agents in error when they still own actionable work", async () => {
+    const { companyId, agentId, issuePrefix } = await seedAgent("error");
+    await insertRun({ companyId, agentId, status: "failed", errorCode: "process_lost" });
+    await insertIssue({
+      companyId,
+      issuePrefix,
+      agentId,
+      status: "in_progress",
+    });
+
+    const reconciled = await heartbeatService(db).reconcileAgentStatus(agentId);
+
+    expect(reconciled?.status).toBe("error");
+  });
+
+  it("keeps error agents in error for non-process_lost failures", async () => {
+    const { companyId, agentId } = await seedAgent("error");
+    await insertRun({ companyId, agentId, status: "failed", errorCode: "adapter_crash" });
+
+    const reconciled = await heartbeatService(db).reconcileAgentStatus(agentId);
+
+    expect(reconciled?.status).toBe("error");
   });
 });
