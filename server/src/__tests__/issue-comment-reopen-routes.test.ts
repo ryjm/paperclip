@@ -265,6 +265,52 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  it("returns a refreshed issue snapshot and emits issue.updated only after the comment write", async () => {
+    const existing = {
+      ...makeIssue("todo"),
+      updatedAt: new Date("2026-04-21T10:00:00.000Z"),
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+      ...existing,
+      ...patch,
+      updatedAt: new Date("2026-04-21T10:05:00.000Z"),
+      _tx: tx,
+    }));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "hello",
+      createdAt: new Date("2026-04-21T10:06:00.000Z"),
+      updatedAt: new Date("2026-04-21T10:06:00.000Z"),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    });
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        comment: "hello",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updatedAt).toBe("2026-04-21T10:06:00.000Z");
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.update.mock.calls[0]?.[2]).toBe(mockTx);
+    expect(mockIssueService.addComment.mock.calls[0]?.[3]).toBe(mockTx);
+
+    const issueUpdatedCallIndex = mockLogActivity.mock.calls.findIndex(
+      ([, input]) => input.action === "issue.updated",
+    );
+    expect(issueUpdatedCallIndex).toBeGreaterThanOrEqual(0);
+    expect(mockIssueService.addComment.mock.invocationCallOrder[0]).toBeLessThan(
+      mockLogActivity.mock.invocationCallOrder[issueUpdatedCallIndex]!,
+    );
+  });
+
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -285,6 +331,7 @@ describe("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -321,6 +368,7 @@ describe("issue comment reopen routes", () => {
       expect.objectContaining({
         assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       }),
+      mockTx,
     );
   });
 
@@ -375,6 +423,7 @@ describe("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),

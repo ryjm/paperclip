@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -2243,24 +2243,26 @@ export function issueService(db: Db) {
 
       const conditions = [eq(issueComments.issueId, issueId)];
       if (afterCommentId) {
-        const anchorExists = await db
-          .select({ id: issueComments.id })
+        const anchor = await db
+          .select({
+            id: issueComments.id,
+            createdAt: issueComments.createdAt,
+          })
           .from(issueComments)
           .where(and(eq(issueComments.issueId, issueId), eq(issueComments.id, afterCommentId)))
-          .then((rows) => rows.length > 0);
+          .then((rows) => rows[0] ?? null);
 
-        if (!anchorExists) return [];
-        const anchorCreatedAt = sql`(SELECT ${issueComments.createdAt} FROM ${issueComments} WHERE ${eq(issueComments.id, afterCommentId)})`;
+        if (!anchor) return [];
         conditions.push(
           order === "asc"
-            ? sql<boolean>`(
-                ${issueComments.createdAt} > ${anchorCreatedAt}
-                OR (${issueComments.createdAt} = ${anchorCreatedAt} AND ${issueComments.id} > ${afterCommentId})
-              )`
-            : sql<boolean>`(
-                ${issueComments.createdAt} < ${anchorCreatedAt}
-                OR (${issueComments.createdAt} = ${anchorCreatedAt} AND ${issueComments.id} < ${afterCommentId})
-              )`,
+            ? or(
+                gt(issueComments.createdAt, anchor.createdAt),
+                and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchor.id)),
+              )!
+            : or(
+                lt(issueComments.createdAt, anchor.createdAt),
+                and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchor.id)),
+              )!,
         );
       }
 
@@ -2343,12 +2345,13 @@ export function issueService(db: Db) {
       issueId: string,
       body: string,
       actor: { agentId?: string; userId?: string; runId?: string | null },
+      dbOrTx: any = db,
     ) => {
-      const issue = await db
+      const issueRows: Array<{ companyId: string }> = await dbOrTx
         .select({ companyId: issues.companyId })
         .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
+        .where(eq(issues.id, issueId));
+      const issue = issueRows[0] ?? null;
 
       if (!issue) throw notFound("Issue not found");
 
@@ -2356,7 +2359,8 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
-      const [comment] = await db
+      const commentedAt = new Date();
+      const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
           companyId: issue.companyId,
@@ -2365,13 +2369,15 @@ export function issueService(db: Db) {
           authorUserId: actor.userId ?? null,
           createdByRunId: actor.runId ?? null,
           body: redactedBody,
+          createdAt: commentedAt,
+          updatedAt: commentedAt,
         })
         .returning();
 
       // Update issue's updatedAt so comment activity is reflected in recency sorting
-      await db
+      await dbOrTx
         .update(issues)
-        .set({ updatedAt: new Date() })
+        .set({ updatedAt: commentedAt })
         .where(eq(issues.id, issueId));
 
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);

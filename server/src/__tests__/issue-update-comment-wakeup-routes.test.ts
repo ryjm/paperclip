@@ -22,6 +22,11 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 
+const mockTx = vi.hoisted(() => ({}));
+const mockDb = vi.hoisted(() => ({
+  transaction: vi.fn(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx)),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(async () => true),
@@ -121,7 +126,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -155,6 +160,7 @@ describe("issue update comment wakeups", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
+    mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
