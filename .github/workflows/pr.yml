@@ -80,7 +80,7 @@ jobs:
             exit 1
           fi
 
-      - name: Validate dependency resolution when manifests change
+      - name: Validate dependency resolution when lockfile-owned inputs change
         run: |
           ./scripts/prepare-ci-lockfile.sh \
             "${{ github.event.pull_request.base.sha }}" \
@@ -108,7 +108,7 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Refresh ephemeral lockfile for manifest PRs
+      - name: Refresh ephemeral lockfile for lockfile-owned input PRs
         run: |
           ./scripts/prepare-ci-lockfile.sh \
             "${{ github.event.pull_request.base.sha }}" \
@@ -154,7 +154,7 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Refresh ephemeral lockfile for manifest PRs
+      - name: Refresh ephemeral lockfile for lockfile-owned input PRs
         run: |
           ./scripts/prepare-ci-lockfile.sh \
             "${{ github.event.pull_request.base.sha }}" \
