@@ -67,8 +67,10 @@ function createSummary(overrides: Partial<ProjectWorkspaceSummary> = {}): Projec
     workspaceId: overrides.workspaceId ?? "workspace-1",
     workspaceName: overrides.workspaceName ?? "PAP-989-multi-user-implementation",
     cwd: overrides.cwd ?? "/worktrees/PAP-989-multi-user-implementation",
-    branchName: overrides.branchName ?? "PAP-989-multi-user-implementation",
-    trackingRef: overrides.trackingRef ?? "origin/main",
+    branchName: overrides.branchName !== undefined ? overrides.branchName : "PAP-989-multi-user-implementation",
+    trackingRef: overrides.trackingRef !== undefined ? overrides.trackingRef : "origin/main",
+    repoRef: overrides.repoRef !== undefined ? overrides.repoRef : null,
+    defaultRef: overrides.defaultRef !== undefined ? overrides.defaultRef : null,
     localGitState: overrides.localGitState ?? null,
     lastUpdatedAt: overrides.lastUpdatedAt ?? new Date("2026-04-12T00:00:00Z"),
     projectWorkspaceId: overrides.projectWorkspaceId ?? "project-workspace-1",
@@ -138,13 +140,13 @@ describe("ProjectWorkspaceSummaryCard", () => {
       repoRoot: "/repo",
       workspacePath: "/repo",
       branchName: "feature/local-state",
-      trackedRef: "origin/main",
+      trackedRef: null,
       hasDirtyTrackedFiles: true,
       hasUntrackedFiles: false,
       dirtyEntryCount: 2,
       untrackedEntryCount: 0,
-      aheadCount: 1,
-      behindCount: 0,
+      aheadCount: null,
+      behindCount: null,
     };
     const root = createRoot(container);
 
@@ -157,6 +159,8 @@ describe("ProjectWorkspaceSummaryCard", () => {
             kind: "project_workspace",
             executionWorkspaceId: null,
             executionWorkspaceStatus: null,
+            repoRef: "release/preview",
+            defaultRef: "main",
             localGitState: gitState,
             branchName: gitState.branchName,
             trackingRef: gitState.trackedRef,
@@ -170,9 +174,11 @@ describe("ProjectWorkspaceSummaryCard", () => {
     });
 
     expect(container.textContent).toContain("Local branch");
-    expect(container.textContent).toContain("Tracked ref");
+    expect(container.textContent).not.toContain("Tracked ref");
+    expect(container.textContent).toContain("Repo ref");
+    expect(container.textContent).toContain("Default ref");
     expect(container.textContent).toContain("2 dirty files");
-    expect(container.textContent).toContain("Ahead by 1");
+    expect(container.textContent).toContain("Ahead/behind unknown");
 
     act(() => {
       root.unmount();
@@ -217,6 +223,41 @@ describe("ProjectWorkspaceSummaryCard", () => {
 
     expect(container.textContent).toContain("Ahead/behind unknown");
     expect(container.textContent).not.toContain("Local checkout clean");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows a distinct base ref for remote-only project workspaces", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary({
+            key: "project:workspace-remote",
+            kind: "project_workspace",
+            executionWorkspaceId: null,
+            executionWorkspaceStatus: null,
+            cwd: null,
+            branchName: "release/preview",
+            trackingRef: "main",
+            localGitState: null,
+          })}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Branch");
+    expect(container.textContent).toContain("Base ref");
+    expect(container.textContent).toContain("release/preview");
+    expect(container.textContent).toContain("main");
 
     act(() => {
       root.unmount();

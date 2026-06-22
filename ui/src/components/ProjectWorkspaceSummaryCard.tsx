@@ -77,6 +77,15 @@ export function ProjectWorkspaceSummaryCard({
   const hasRunningServices = summary.runningServiceCount > 0;
   const actionKey = `${summary.key}:${hasRunningServices ? "stop" : "start"}`;
   const localGitLabels = localGitStatusLabels(summary);
+  const showConfiguredRepoRef =
+    summary.kind === "project_workspace"
+    && Boolean(summary.localGitState)
+    && Boolean(summary.repoRef);
+  const showConfiguredDefaultRef =
+    summary.kind === "project_workspace"
+    && Boolean(summary.localGitState)
+    && Boolean(summary.defaultRef)
+    && summary.defaultRef !== summary.repoRef;
 
   return (
     <div className="border-b border-border px-4 py-4 last:border-b-0 sm:px-5">
@@ -208,6 +217,30 @@ export function ProjectWorkspaceSummaryCard({
                     {summary.localGitState ? "Tracked ref" : "Base ref"}
                   </div>
                   <div className="break-all font-mono text-xs text-foreground">{summary.trackingRef}</div>
+                </div>
+              </div>
+            ) : null}
+
+            {showConfiguredRepoRef ? (
+              <div className="flex items-start gap-2">
+                <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0">
+                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                    Repo ref
+                  </div>
+                  <div className="break-all font-mono text-xs text-foreground">{summary.repoRef}</div>
+                </div>
+              </div>
+            ) : null}
+
+            {showConfiguredDefaultRef ? (
+              <div className="flex items-start gap-2">
+                <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0">
+                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                    Default ref
+                  </div>
+                  <div className="break-all font-mono text-xs text-foreground">{summary.defaultRef}</div>
                 </div>
               </div>
             ) : null}

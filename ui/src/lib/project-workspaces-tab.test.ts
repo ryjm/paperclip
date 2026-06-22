@@ -206,6 +206,100 @@ describe("buildProjectWorkspaceSummaries", () => {
     expect(summaries[1]?.key).toBe("project:workspace-default");
   });
 
+  it("keeps configured repo and base refs distinct when local git state is unavailable", () => {
+    const remoteWorkspace = createProjectWorkspace({
+      id: "workspace-remote",
+      name: "release-remote",
+      repoRef: "release/preview",
+      defaultRef: "main",
+      sourceType: "git_repo",
+      cwd: null,
+      updatedAt: new Date("2026-03-26T09:00:00Z"),
+    });
+    const remoteProject = {
+      workspaces: [primaryWorkspace, remoteWorkspace],
+      primaryWorkspace,
+    } satisfies Pick<Project, "workspaces" | "primaryWorkspace">;
+
+    const summaries = buildProjectWorkspaceSummaries({
+      project: remoteProject,
+      issues: [
+        createIssue({
+          id: "issue-remote",
+          projectWorkspaceId: remoteWorkspace.id,
+          identifier: "PAP-910",
+          updatedAt: new Date("2026-03-26T10:00:00Z"),
+        }),
+      ],
+      executionWorkspaces: [],
+    });
+
+    expect(summaries[0]).toMatchObject({
+      key: "project:workspace-remote",
+      kind: "project_workspace",
+      workspaceName: "release-remote",
+      branchName: "release/preview",
+      trackingRef: "main",
+      repoRef: "release/preview",
+      defaultRef: "main",
+      localGitState: null,
+    });
+  });
+
+  it("preserves configured remote refs alongside live local git state", () => {
+    const localWorkspace = createProjectWorkspace({
+      id: "workspace-local",
+      name: "release-local",
+      repoRef: "release/preview",
+      defaultRef: "main",
+      localGitState: {
+        repoRoot: "/repo",
+        workspacePath: "/repo",
+        branchName: "feature/local-state",
+        trackedRef: null,
+        hasDirtyTrackedFiles: false,
+        hasUntrackedFiles: false,
+        dirtyEntryCount: 0,
+        untrackedEntryCount: 0,
+        aheadCount: null,
+        behindCount: null,
+      },
+      updatedAt: new Date("2026-03-26T09:00:00Z"),
+    });
+    const localProject = {
+      workspaces: [primaryWorkspace, localWorkspace],
+      primaryWorkspace,
+    } satisfies Pick<Project, "workspaces" | "primaryWorkspace">;
+
+    const summaries = buildProjectWorkspaceSummaries({
+      project: localProject,
+      issues: [
+        createIssue({
+          id: "issue-local",
+          projectWorkspaceId: localWorkspace.id,
+          identifier: "PAP-911",
+          updatedAt: new Date("2026-03-26T10:00:00Z"),
+        }),
+      ],
+      executionWorkspaces: [],
+    });
+
+    expect(summaries[0]).toMatchObject({
+      key: "project:workspace-local",
+      kind: "project_workspace",
+      workspaceName: "release-local",
+      branchName: "feature/local-state",
+      trackingRef: null,
+      repoRef: "release/preview",
+      defaultRef: "main",
+      localGitState: {
+        trackedRef: null,
+        aheadCount: null,
+        behindCount: null,
+      },
+    });
+  });
+
   it("excludes issues that only use the default shared workspace", () => {
     const summaries = buildProjectWorkspaceSummaries({
       project,
