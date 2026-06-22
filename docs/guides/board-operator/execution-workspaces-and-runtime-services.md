@@ -28,6 +28,71 @@ Workspace commands are manually controlled from the UI.
 - Paperclip does not automatically start or stop these workspace services as part of issue execution.
 - Paperclip also does not automatically restart workspace services on server boot.
 
+### Runtime control routes
+
+Two routes expose runtime control for execution workspaces:
+
+```
+POST /api/execution-workspaces/{id}/runtime-services/:action
+POST /api/execution-workspaces/{id}/runtime-commands/:action
+```
+
+Both routes share the same handler. The `:action` path parameter must be one of `start`, `stop`, `restart`, or `run`.
+
+### Actions
+
+- **`start`** — starts the configured runtime services for the execution workspace. Ensures the workspace checkout is available first (provisioning if necessary). Requires an effective runtime config (own or inherited from the project workspace).
+- **`stop`** — stops running runtime services. Does not require runtime config.
+- **`restart`** — stops then starts services. Equivalent to a `stop` followed by a `start`.
+- **`run`** — runs a one-shot job command. Requires a `workspaceCommandId` that points to a job-type workspace command. Does not affect long-running services.
+
+### Job vs service restrictions
+
+Workspace commands are typed as either `service` (long-running) or `job` (one-shot).
+
+- A **job** only accepts the `run` action. Calling `start`, `stop`, or `restart` on a job returns `422`.
+- A **service** accepts `start`, `stop`, and `restart`. Calling `run` on a service returns `422`.
+- The `run` action itself requires a workspace command to be selected — calling `run` with no `workspaceCommandId` returns `422`.
+
+### Request body — targeting
+
+The request body selects which commands or services to act on:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `workspaceCommandId` | `string` (optional) | Selects a named workspace command definition from the effective runtime config. |
+| `runtimeServiceId` | `string` UUID (optional) | Targets an existing runtime service instance by its ID. |
+| `serviceIndex` | `integer` (optional) | Targets a specific configured service by its position in the runtime config. |
+
+When `workspaceCommandId` points to a service-type command and no `runtimeServiceId` is provided, Paperclip automatically matches the command to its corresponding runtime service instance by name, command string, and working directory.
+
+When none of these fields are set, service actions (`start`, `stop`, `restart`) apply to all configured services.
+
+### Local-path requirement
+
+The execution workspace must have a local `cwd` (checkout path) before any runtime command can run. If the workspace has no local path, the route returns `422` with:
+
+```
+Execution workspace needs a local path before Paperclip can run workspace commands
+```
+
+For `start`, `restart`, and `run`, the handler additionally ensures the workspace checkout is provisioned and available before proceeding.
+
+### Common failure responses
+
+| Status | Condition |
+|---|---|
+| `404` | Execution workspace not found. |
+| `404` | Action is not `start`, `stop`, `restart`, or `run`. |
+| `404` | `workspaceCommandId` does not match any command in the effective runtime config. |
+| `404` | `runtimeServiceId` does not match any existing runtime service on this workspace. |
+| `422` | Workspace has no local `cwd`. |
+| `422` | Job command used with `start`, `stop`, or `restart`. |
+| `422` | Service command used with `run`. |
+| `422` | `run` action called with no workspace command selected. |
+| `422` | `start` or `restart` called but no effective runtime config exists (neither own config nor inherited project workspace config). |
+| `422` | `serviceIndex` is out of range for the configured service entries. |
+
 ## Execution workspace inheritance
 
 Execution workspaces isolate code and runtime state from the project primary workspace.
