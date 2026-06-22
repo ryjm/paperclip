@@ -122,6 +122,7 @@
               "api/issues",
               "api/approvals",
               "api/goals-and-projects",
+              "api/execution-workspaces",
               "api/costs",
               "api/secrets",
               "api/activity",
