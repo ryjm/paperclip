@@ -17,11 +17,11 @@ for sha in "$base_sha" "$head_sha"; do
 done
 
 changed="$(git diff --name-only "$base_sha" "$head_sha")"
-manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
+lockfile_inputs_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|(^|/)\.npmrc$|(^|/)pnpmfile\.(cjs|js|mjs)$|^patches/'
 
-if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
-  echo "Dependency manifests changed; refreshing pnpm-lock.yaml in the CI workspace."
+if printf '%s\n' "$changed" | grep -Eq "$lockfile_inputs_pattern"; then
+  echo "Lockfile-owned inputs changed; refreshing pnpm-lock.yaml in the CI workspace."
   pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
 else
-  echo "Dependency manifests unchanged; keeping the checked-in pnpm-lock.yaml."
+  echo "Lockfile-owned inputs unchanged; keeping the checked-in pnpm-lock.yaml."
 fi
