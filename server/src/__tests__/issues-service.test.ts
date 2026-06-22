@@ -1766,6 +1766,106 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   });
 });
 
+describeEmbeddedPostgres("issueService.addComment", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-add-comment-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 40_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("uses the caller transaction and commits an immediately readable comment thread", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const initialUpdatedAt = new Date("2026-04-21T10:00:00.000Z");
+    let commentId: string | null = null;
+    let commentCreatedAt: string | null = null;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "PATCH comment consistency",
+      status: "todo",
+      priority: "medium",
+      createdByUserId: "local-board",
+      updatedAt: initialUpdatedAt,
+    });
+
+    await db.transaction(async (tx) => {
+      const comment = await svc.addComment(
+        issueId,
+        "hello from tx",
+        { userId: "local-board" },
+        tx,
+      );
+
+      commentId = comment.id;
+      commentCreatedAt = comment.createdAt.toISOString();
+
+      const issueInTx = await tx
+        .select({ updatedAt: issues.updatedAt })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      const commentInTx = await tx
+        .select({
+          id: issueComments.id,
+          createdAt: issueComments.createdAt,
+          updatedAt: issueComments.updatedAt,
+        })
+        .from(issueComments)
+        .where(eq(issueComments.id, comment.id))
+        .then((rows) => rows[0] ?? null);
+
+      expect(comment.updatedAt.toISOString()).toBe(comment.createdAt.toISOString());
+      expect(issueInTx?.updatedAt.toISOString()).toBe(comment.createdAt.toISOString());
+      expect(commentInTx?.id).toBe(comment.id);
+      expect(commentInTx?.createdAt.toISOString()).toBe(comment.createdAt.toISOString());
+      expect(commentInTx?.updatedAt.toISOString()).toBe(comment.updatedAt.toISOString());
+    });
+
+    const issueAfterCommit = await svc.getById(issueId);
+    const commentsAfterCommit = await svc.listComments(issueId, { order: "asc" });
+
+    expect(commentId).not.toBeNull();
+    expect(commentCreatedAt).not.toBeNull();
+    expect(issueAfterCommit?.updatedAt.toISOString()).toBe(commentCreatedAt);
+    expect(commentsAfterCommit).toHaveLength(1);
+    expect(commentsAfterCommit[0]?.id).toBe(commentId);
+    expect(commentsAfterCommit[0]?.createdAt.toISOString()).toBe(commentCreatedAt);
+  });
+});
+
 describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

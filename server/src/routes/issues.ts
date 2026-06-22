@@ -1517,43 +1517,68 @@ export function issueRoutes(
       }
     }
 
-    let issue;
+    let issue: Awaited<ReturnType<typeof svc.update>> | null;
+    let comment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
     try {
-      if (transition.decision && decisionId) {
-        const decision = transition.decision;
-        issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(
+      const updatePayload = {
+        ...updateFields,
+        actorAgentId: actor.agentId ?? null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
+      const createComment = async (dbOrTx?: Parameters<typeof svc.addComment>[3]) => {
+        if (!commentBody) return null;
+        if (dbOrTx) {
+          return svc.addComment(
             id,
+            commentBody,
             {
-              ...updateFields,
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+            },
+            dbOrTx,
+          );
+        }
+        return svc.addComment(id, commentBody, {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        });
+      };
+
+      if (commentBody || (transition.decision && decisionId)) {
+        const decision = transition.decision;
+        const mutationResult = await db.transaction(async (tx) => {
+          const updated = await svc.update(id, updatePayload, tx);
+          if (!updated) {
+            return { issue: null, comment: null };
+          }
+
+          if (decision && decisionId) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: decision.stageId,
+              stageType: decision.stageType,
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            },
-            tx,
-          );
-          if (!updated) return null;
+              outcome: decision.outcome,
+              body: decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
 
-          await tx.insert(issueExecutionDecisions).values({
-            id: decisionId,
-            companyId: updated.companyId,
-            issueId: updated.id,
-            stageId: decision.stageId,
-            stageType: decision.stageType,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            outcome: decision.outcome,
-            body: decision.body,
-            createdByRunId: actor.runId ?? null,
-          });
-
-          return updated;
+          const createdComment = await createComment(tx);
+          return {
+            issue: updated,
+            comment: createdComment,
+          };
         });
+        issue = mutationResult.issue;
+        comment = mutationResult.comment;
       } else {
-        issue = await svc.update(id, {
-          ...updateFields,
-          actorAgentId: actor.agentId ?? null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        });
+        issue = await svc.update(id, updatePayload);
       }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
@@ -1581,6 +1606,12 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+    if (comment) {
+      issue = {
+        ...issue,
+        updatedAt: comment.updatedAt,
+      };
     }
     let issueResponse: typeof issue & { blockedBy?: unknown; blocks?: unknown } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
@@ -1628,25 +1659,6 @@ export function issueRoutes(
       previous.status !== undefined &&
       issue.status === "todo";
     const reopenFromStatus = reopened ? existing.status : null;
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.updated",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        ...updateFields,
-        identifier: issue.identifier,
-        ...(commentBody ? { source: "comment" } : {}),
-        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
-        ...(interruptedRunId ? { interruptedRunId } : {}),
-        _previous: hasFieldChanges ? previous : undefined,
-      },
-    });
-
     if (Array.isArray(req.body.blockedByIssueIds)) {
       const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
       const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);
@@ -1737,14 +1749,26 @@ export function issueRoutes(
       }
     }
 
-    let comment = null;
-    if (commentBody) {
-      comment = await svc.addComment(id, commentBody, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      });
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        ...updateFields,
+        identifier: issue.identifier,
+        ...(commentBody ? { source: "comment" } : {}),
+        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+        ...(interruptedRunId ? { interruptedRunId } : {}),
+        _previous: hasFieldChanges ? previous : undefined,
+      },
+    });
 
+    if (comment) {
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -1764,7 +1788,6 @@ export function issueRoutes(
           ...(hasFieldChanges ? { updated: true } : {}),
         },
       });
-
     }
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
