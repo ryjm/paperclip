@@ -37,7 +37,6 @@ async function tryReadGitOutput(cwd: string, args: string[]) {
 
 export async function inspectLocalWorkspaceGitState(input: {
   workspacePath: string | null | undefined;
-  trackedRef?: string | null;
 }): Promise<{ gitState: LocalWorkspaceGitState | null; warnings: string[] }> {
   const warnings: string[] = [];
   const workspacePath = readNonEmptyString(input.workspacePath);
@@ -90,8 +89,7 @@ export async function inspectLocalWorkspaceGitState(input: {
   }
 
   const trackedRef =
-    readNonEmptyString(input.trackedRef)
-    ?? await tryReadGitOutput(workspacePath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
+    await tryReadGitOutput(workspacePath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
 
   let aheadCount: number | null = null;
   let behindCount: number | null = null;

@@ -111,21 +111,21 @@ describeEmbeddedPostgres("projectService local git state", () => {
       repoRoot: path.resolve(repoRoot),
       workspacePath: path.resolve(repoRoot),
       branchName: "feature/local-git-state",
-      trackedRef: "main",
+      trackedRef: null,
       hasDirtyTrackedFiles: true,
       hasUntrackedFiles: true,
       dirtyEntryCount: 1,
       untrackedEntryCount: 1,
-      aheadCount: 1,
-      behindCount: 0,
+      aheadCount: null,
+      behindCount: null,
     });
     expect(listedWorkspaces[0]?.localGitState).toMatchObject({
       branchName: "feature/local-git-state",
-      trackedRef: "main",
+      trackedRef: null,
       dirtyEntryCount: 1,
       untrackedEntryCount: 1,
-      aheadCount: 1,
-      behindCount: 0,
+      aheadCount: null,
+      behindCount: null,
     });
   }, 20_000);
 

@@ -235,7 +235,6 @@ async function loadLocalGitStateByWorkspaceId(
     rows.map(async (row) => {
       const { gitState } = await inspectLocalWorkspaceGitState({
         workspacePath: normalizeWorkspaceCwd(row.cwd),
-        trackedRef: readNonEmptyString(row.repoRef) ?? readNonEmptyString(row.defaultRef),
       });
       return [row.id, gitState] as const;
     }),

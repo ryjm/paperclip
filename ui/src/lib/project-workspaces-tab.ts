@@ -1,4 +1,4 @@
-import type { ExecutionWorkspace, Issue, LocalWorkspaceGitState, Project } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, LocalWorkspaceGitState, Project, ProjectWorkspace } from "@paperclipai/shared";
 
 type ProjectWorkspaceLike = Pick<Project, "workspaces" | "primaryWorkspace">;
 
@@ -10,6 +10,8 @@ export interface ProjectWorkspaceSummary {
   cwd: string | null;
   branchName: string | null;
   trackingRef: string | null;
+  repoRef: string | null;
+  defaultRef: string | null;
   localGitState: LocalWorkspaceGitState | null;
   lastUpdatedAt: Date;
   projectWorkspaceId: string | null;
@@ -54,6 +56,20 @@ function isDefaultSharedExecutionWorkspace(input: {
   return input.executionWorkspace.mode === "shared_workspace" && linkedProjectWorkspaceId === input.primaryWorkspaceId;
 }
 
+function projectWorkspaceBranchName(projectWorkspace: ProjectWorkspace) {
+  if (projectWorkspace.localGitState) {
+    return projectWorkspace.localGitState.branchName;
+  }
+  return projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null;
+}
+
+function projectWorkspaceTrackingRef(projectWorkspace: ProjectWorkspace) {
+  if (projectWorkspace.localGitState) {
+    return projectWorkspace.localGitState.trackedRef;
+  }
+  return projectWorkspace.defaultRef ?? projectWorkspace.repoRef ?? null;
+}
+
 export function buildProjectWorkspaceSummaries(input: {
   project: ProjectWorkspaceLike;
   issues: Issue[];
@@ -92,6 +108,8 @@ export function buildProjectWorkspaceSummaries(input: {
           cwd: executionWorkspace.cwd ?? null,
           branchName: executionWorkspace.branchName ?? executionWorkspace.baseRef ?? null,
           trackingRef: executionWorkspace.baseRef ?? null,
+          repoRef: null,
+          defaultRef: executionWorkspace.baseRef ?? null,
           localGitState: null,
           lastUpdatedAt: maxDate(
             executionWorkspace.lastUsedAt,
@@ -131,8 +149,10 @@ export function buildProjectWorkspaceSummaries(input: {
         workspaceId: projectWorkspace.id,
         workspaceName: projectWorkspace.name,
         cwd: projectWorkspace.cwd ?? null,
-        branchName: projectWorkspace.localGitState?.branchName ?? projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
-        trackingRef: projectWorkspace.localGitState?.trackedRef ?? projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
+        branchName: projectWorkspaceBranchName(projectWorkspace),
+        trackingRef: projectWorkspaceTrackingRef(projectWorkspace),
+        repoRef: projectWorkspace.repoRef ?? null,
+        defaultRef: projectWorkspace.defaultRef ?? null,
         localGitState: projectWorkspace.localGitState ?? null,
         lastUpdatedAt: maxDate(projectWorkspace.updatedAt, issue.updatedAt),
         projectWorkspaceId: projectWorkspace.id,
@@ -163,8 +183,10 @@ export function buildProjectWorkspaceSummaries(input: {
       workspaceId: projectWorkspace.id,
       workspaceName: projectWorkspace.name,
       cwd: projectWorkspace.cwd ?? null,
-      branchName: projectWorkspace.localGitState?.branchName ?? projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
-      trackingRef: projectWorkspace.localGitState?.trackedRef ?? projectWorkspace.repoRef ?? projectWorkspace.defaultRef ?? null,
+      branchName: projectWorkspaceBranchName(projectWorkspace),
+      trackingRef: projectWorkspaceTrackingRef(projectWorkspace),
+      repoRef: projectWorkspace.repoRef ?? null,
+      defaultRef: projectWorkspace.defaultRef ?? null,
       localGitState: projectWorkspace.localGitState ?? null,
       lastUpdatedAt: maxDate(projectWorkspace.updatedAt),
       projectWorkspaceId: projectWorkspace.id,
